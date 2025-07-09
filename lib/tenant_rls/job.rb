@@ -15,15 +15,22 @@ module TenantRls
 
     module SidekiqWorkerPatch
       def perform(*args)
-        Rails.logger.debug { "[TenantRls] Sidekiq worker perform called with args: #{args.inspect}" }
-        execute_with_tenant_context(type: :worker, args: args) do
-          super(*args)
+        if self.class.to_s.match?(/Job/i)
+          Rails.logger.debug { "[TenantRls] Sidekiq worker perform called with args: #{args.inspect}" }
+          around_perform_with_tenant_context(*args) do
+            super(*args)
+          end
+        else
+          Rails.logger.debug { "[TenantRls] Sidekiq worker perform called with args: #{args.inspect}" }
+          execute_with_tenant_context(type: :worker, args: args) do
+            super(*args)
+          end
         end
       end
     end
 
     def around_perform_with_tenant_context(*args, &block)
-      Rails.logger.debug { "[TenantRls] ActiveJob perform called with args: #{args.inspect}" }
+      Rails.logger.debug { "[TenantRls] Job perform called with args: #{args.inspect}" }
 
       job_data = args.first
       if respond_to?(:from_job_data) && job_data
@@ -56,8 +63,8 @@ module TenantRls
       execute_with_tenant_context(type: :job, data: job_data, &block)
     end
 
-    def set_tenant_from_job_data(job_data)
-      Rails.logger.warn '[TenantRls] Using legacy set_tenant_from_job_data method - consider upgrading to new API'
+    def tenant_from_job_data(job_data)
+      Rails.logger.warn '[TenantRls] Using legacy tenant_from_job_data method - consider upgrading to new API'
 
       context = { job_data: job_data }
       tenant_id = TenantRls::TenantResolver.resolve_tenant_id(context)

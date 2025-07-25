@@ -347,7 +347,7 @@ RSpec.describe 'TenantRls Job Context Integration - Optimized' do
 
         service = service_class.new
         job_data = { company: { id: 123 } }
-        service.set_tenant_from_job_data(job_data)
+        service.tenant_from_job_data(job_data)
 
         expect(TenantRls::Current.tenant_id).to eq(123)
       end

@@ -18,6 +18,14 @@ module TenantRls
       end
       @tenant_resolver_strategy = strategy
     end
+
+    # Derive the tenant object key name from the configured tenant id column.
+    # For example, :company_id => :company, :account_id => :account
+    def tenant_object_key
+      column_name = tenant_id_column.to_s
+      base = column_name.end_with?('_id') ? column_name.sub(/_id\z/, '') : column_name
+      base.to_sym
+    end
   end
 
   class << self

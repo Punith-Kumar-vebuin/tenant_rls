@@ -145,15 +145,29 @@ module TenantRls
 
       def build_tenant_context_for_controller(context_data)
         strategy = TenantRls.configuration.tenant_resolver_strategy
+        tenant_object_key = TenantRls.configuration.tenant_object_key
+        dynamic_current_key = "current_#{tenant_object_key}".to_sym
 
         case strategy
         when :warden
           { request: context_data[:request] }
         when :custom_auth
-          {
+          base = {
             current_user: context_data[:current_user],
             current_company: context_data[:current_company]
           }
+
+          # Provide dynamically named current tenant object if present on the controller
+          if context_data.key?(dynamic_current_key)
+            base[dynamic_current_key] = context_data[dynamic_current_key]
+          end
+
+          # Also provide plain tenant object key if caller prefers that convention
+          if context_data.key?(tenant_object_key)
+            base[tenant_object_key] = context_data[tenant_object_key]
+          end
+
+          base
         when :manual
           { tenant_id: context_data[:tenant_id], user: context_data[:user] }
         else

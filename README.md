@@ -30,16 +30,27 @@ Configure the gem in an initializer (`config/initializers/tenant_rls.rb`):
 ```ruby
 TenantRls.configure do |config|
   config.tenant_resolver_strategy = :custom_auth
+  # Configure the tenant id column used across resolvers and contexts.
+  # Defaults to :company_id. Examples: :account_id, :tenant_id
   config.tenant_id_column = :company_id
   config.debug_logging = Rails.env.development?
 end
 ```
 
+Notes:
+- The configured `tenant_id_column` drives how tenant is resolved everywhere (controllers, jobs, and warden).
+- If you set `tenant_id_column = :account_id`, the gem will look for:
+  - Direct `account_id` values in hashes/payloads
+  - A nested `account` object with an `id`
+  - Methods like `current_account` on controllers (if available)
+  - Associations or attributes on the user like `user.account_id` or `user.account.id`
+- Backward compatible: existing `company_id`/`company` usage continues to work when `tenant_id_column` is left as `:company_id`.
+
 ## Usage Patterns
 
 ### Pattern 1: Custom Authentication (Backend API)
 
-For applications using custom authentication with `current_user` and `current_company`:
+For applications using custom authentication with `current_user` and a configured tenant object (e.g., `current_company` or `current_account`):
 
 ```ruby
 TenantRls.configure do |config|
@@ -51,9 +62,15 @@ class Api::V1::BaseController < ApplicationController
     @current_user ||= User.find_by(id: request.headers['x-user-id'])
   end
 
+  # Example when tenant_id_column is :company_id
   def current_company
     @current_company ||= Company.find_by(id: request.headers['x-company-id'])
   end
+
+  # If you configure tenant_id_column = :account_id, you can alternatively expose:
+  # def current_account
+  #   @current_account ||= Account.find_by(id: request.headers['x-account-id'])
+  # end
 end
 ```
 
@@ -86,16 +103,16 @@ class NotificationWorker
   include Sidekiq::Worker
   include TenantRls::Job
 
-  def perform(notification_type, notification_data, company_id)
-    Notifications::NotificationService.new(notification_type, notification_data, company_id).serve_notification
+  def perform(notification_type, notification_data, tenant_id)
+    Notifications::NotificationService.new(notification_type, notification_data, tenant_id).serve_notification
   end
 end
 ```
 
 **Worker Patterns Supported:**
-- `def perform(notification_type, notification_data, company_id)`
-- `def perform(notification_data, company_id)`
-- `def perform(data_hash)` where `data_hash[:company_id]` exists
+- `def perform(notification_type, notification_data, <tenant_id_column>)`
+- `def perform(notification_data, <tenant_id_column>)`
+- `def perform(data_hash)` where `data_hash[<tenant_id_column>]` exists
 
 #### Automatic Job Integration
 
@@ -116,8 +133,8 @@ end
 ```
 
 **Job Data Patterns Supported:**
-- Direct `company_id` in job data
-- Nested `company` object with `id` field
+- Direct `<tenant_id_column>` in job data (e.g., `:company_id`, `:account_id`)
+- Nested tenant object with `id` field using inferred key from `<tenant_id_column>` (e.g., `:company`, `:account`)
 - JSON string payload with company information
 - DeepHashie objects from `from_job_data` method
 
@@ -129,8 +146,8 @@ If you need manual control over tenant context:
 class CustomWorker
   include TenantRls::Job
 
-  def perform(notification_type, notification_data, company_id)
-    with_tenant_context_for_worker(notification_type, notification_data, company_id) do
+  def perform(notification_type, notification_data, tenant_id)
+    with_tenant_context_for_worker(notification_type, notification_data, tenant_id) do
       # Your worker logic here
     end
   end
@@ -173,7 +190,7 @@ TenantRls.configure do |config|
   config.tenant_resolver_strategy = :manual
 end
 
-TenantRls.with_tenant(company_id) do
+TenantRls.with_tenant(tenant_id) do
   # Your code here with tenant context
 end
 ```
@@ -206,6 +223,8 @@ CREATE POLICY tenant_policy ON your_table
   WITH CHECK ( tenant_rls.check_current_tenant(company_id) );
 ```
 
+Note: Replace `company_id` in the example policy with your actual tenant column to match `tenant_id_column` if it differs.
+
 ## Testing
 
 The gem includes comprehensive test support:
@@ -220,11 +239,11 @@ RSpec.describe "Multi-tenant functionality" do
   it "isolates tenant data" do
     company1 = create(:company)
     company2 = create(:company)
-    
+
     TenantRls.with_tenant(company1.id) do
       # Test company1 data access
     end
-    
+
     TenantRls.with_tenant(company2.id) do
       # Test company2 data access
     end

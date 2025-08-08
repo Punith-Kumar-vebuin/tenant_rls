@@ -39,6 +39,37 @@ module TenantRls
         return nil unless request&.env&.dig('warden')
 
         user = request.env['warden'].user
+        return nil unless user
+
+        tenant_id_column = TenantRls.configuration.tenant_id_column.to_sym
+        tenant_object_key = TenantRls.configuration.tenant_object_key
+
+        # 1) Direct attribute on user, e.g., user.account_id
+        if user.respond_to?(tenant_id_column)
+          value = user.public_send(tenant_id_column)
+          return value if value.is_a?(Integer) && value > 0
+        end
+
+        # 2) Through associated tenant object, e.g., user.account.id
+        if user.respond_to?(tenant_object_key)
+          tenant_object = user.public_send(tenant_object_key)
+          if tenant_object && tenant_object.respond_to?(:id)
+            value = tenant_object.id
+            return value if value.is_a?(Integer) && value > 0
+          end
+        end
+
+        # 3) Through join association, e.g., user.accounts_users.first.account_id
+        join_assoc = "#{tenant_object_key}s_users"
+        if user.respond_to?(join_assoc)
+          record = Array(user.public_send(join_assoc)).first
+          if record && record.respond_to?(tenant_id_column)
+            value = record.public_send(tenant_id_column)
+            return value if value.is_a?(Integer) && value > 0
+          end
+        end
+
+        # 4) Backward compatibility for company-based schemas
         user&.companies_users&.first&.company_id
       end
     end
@@ -47,10 +78,39 @@ module TenantRls
   class CustomAuthResolver < BaseResolver
     class << self
       def resolve(context = {})
-        current_company = context[:current_company]
-        return nil unless current_company
+        tenant_id_column = TenantRls.configuration.tenant_id_column.to_sym
+        tenant_object_key = TenantRls.configuration.tenant_object_key
 
-        current_company.id
+        # 1) If context directly provides the tenant id column
+        if context.key?(tenant_id_column)
+          value = context[tenant_id_column]
+          return value if value.is_a?(Integer) && value > 0
+        end
+        string_key = tenant_id_column.to_s
+        if context.key?(string_key)
+          value = context[string_key]
+          return value if value.is_a?(Integer) && value > 0
+        end
+
+        # 2) If context provides a tenant object using configured key
+        tenant_obj = context[tenant_object_key] || context[tenant_object_key.to_s]
+        if tenant_obj
+          if tenant_obj.is_a?(Integer)
+            return tenant_obj if tenant_obj > 0
+          elsif tenant_obj.respond_to?(:id)
+            value = tenant_obj.id
+            return value if value.is_a?(Integer) && value > 0
+          end
+        end
+
+        # 3) Backward compatibility for current_company
+        current_company = context[:current_company] || context['current_company']
+        if current_company && current_company.respond_to?(:id)
+          value = current_company.id
+          return value if value.is_a?(Integer) && value > 0
+        end
+
+        nil
       end
     end
   end
@@ -70,8 +130,11 @@ module TenantRls
           return tenant_id if tenant_id
         end
 
-        if context[:company_id]
-          return context[:company_id]
+        # Directly provided configured tenant id column in context
+        tenant_id_column = TenantRls.configuration.tenant_id_column.to_sym
+        if context.key?(tenant_id_column)
+          value = context[tenant_id_column]
+          return value if value.is_a?(Integer) && value.positive?
         end
 
         Rails.logger.warn "[TenantRls] No tenant_id could be resolved from context: #{context.inspect}"
@@ -80,6 +143,7 @@ module TenantRls
 
       private
         def extract_company_id_from_worker_args(args)
+          # Heuristics for worker args stay positional and hash-based for compatibility
           return nil unless args
 
           if args.is_a?(Array) && !args.empty?
@@ -97,7 +161,8 @@ module TenantRls
           end
 
           if args.is_a?(Hash)
-            company_id = args[:company_id] || args['company_id']
+            tenant_id_column = TenantRls.configuration.tenant_id_column
+            company_id = args[tenant_id_column] || args[tenant_id_column.to_s]
             if company_id&.is_a?(Integer) && company_id > 0
               return company_id
             end
@@ -120,36 +185,49 @@ module TenantRls
           end
 
           if job_data.is_a?(Hash)
-            %w(company_id).each do |key|
-              [key.to_sym, key.to_s].each do |k|
-                if job_data.key?(k) && job_data[k]
-                  company_id = job_data[k]
-                  if company_id.is_a?(Integer) && company_id > 0
-                    return company_id
-                  end
-                end
+            tenant_id_column = TenantRls.configuration.tenant_id_column
+            tenant_object_key = TenantRls.configuration.tenant_object_key
+
+            # Direct tenant id column
+            if job_data.key?(tenant_id_column) || job_data.key?(tenant_id_column.to_s)
+              value = job_data[tenant_id_column] || job_data[tenant_id_column.to_s]
+              return value if value.is_a?(Integer) && value.positive?
+            end
+
+            # Nested tenant object by configured key
+            if job_data.key?(tenant_object_key) || job_data.key?(tenant_object_key.to_s)
+              tenant_obj = job_data[tenant_object_key] || job_data[tenant_object_key.to_s]
+              if tenant_obj.is_a?(Hash)
+                value = tenant_obj[:id] || tenant_obj['id']
+                return value if value.is_a?(Integer) && value.positive?
+              elsif tenant_obj.is_a?(Integer)
+                return tenant_obj if tenant_obj.positive?
               end
             end
 
-            %w(company).each do |key|
-              [key.to_sym, key.to_s].each do |k|
-                if job_data.key?(k) && job_data[k]
-                  company_data = job_data[k]
-                  if company_data.is_a?(Hash)
-                    company_id = company_data[:id] || company_data['id']
-                    if company_id&.is_a?(Integer) && company_id > 0
-                      return company_id
-                    end
-                  end
-                end
+            # Backward compatibility for company key
+            if job_data.key?(:company) || job_data.key?('company')
+              company_data = job_data[:company] || job_data['company']
+              if company_data.is_a?(Hash)
+                company_id = company_data[:id] || company_data['id']
+                return company_id if company_id.is_a?(Integer) && company_id.positive?
               end
             end
           end
 
-          if job_data.respond_to?(:company) && job_data.company&.respond_to?(:id)
-            company_id = job_data.company.id
-            if company_id.is_a?(Integer) && company_id > 0
-              return company_id
+          # Deep object access: prefer configured accessor; fallback to company
+          tenant_object_key = TenantRls.configuration.tenant_object_key
+          if job_data.respond_to?(tenant_object_key)
+            tenant_obj = job_data.public_send(tenant_object_key)
+            if tenant_obj && tenant_obj.respond_to?(:id)
+              value = tenant_obj.id
+              return value if value.is_a?(Integer) && value.positive?
+            end
+          elsif job_data.respond_to?(:company)
+            company = job_data.company
+            if company && company.respond_to?(:id)
+              value = company.id
+              return value if value.is_a?(Integer) && value.positive?
             end
           end
 

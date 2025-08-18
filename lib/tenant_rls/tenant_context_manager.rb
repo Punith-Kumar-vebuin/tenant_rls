@@ -149,7 +149,7 @@ module TenantRls
         dynamic_current_key = "current_#{tenant_object_key}".to_sym
 
         case strategy
-        when :warden
+        when :warden, :hybrid
           { request: context_data[:request] }
         when :custom_auth
           base = {
@@ -179,7 +179,7 @@ module TenantRls
         strategy = TenantRls.configuration.tenant_resolver_strategy
 
         case strategy
-        when :warden
+        when :warden, :hybrid
           context[:request]&.env&.dig('warden')&.user
         when :custom_auth
           context[:current_user]

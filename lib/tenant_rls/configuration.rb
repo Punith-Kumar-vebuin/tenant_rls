@@ -9,7 +9,7 @@ module TenantRls
     end
 
     def valid_strategies
-      [:warden, :custom_auth, :job_context, :manual]
+      [:warden, :custom_auth, :job_context, :manual, :hybrid]
     end
 
     def tenant_resolver_strategy=(strategy)

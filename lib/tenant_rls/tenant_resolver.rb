@@ -248,6 +248,9 @@ module TenantRls
       end
 
       def extract_tenant_from_object(job_data)
+        # Default pick first arg
+        return job_data if job_data.is_a?(Integer) && job_data > 0
+
         tenant_object_key = tenant_object_key_for_column(TenantRls.configuration.tenant_id_column)
 
         # Try configured accessor first

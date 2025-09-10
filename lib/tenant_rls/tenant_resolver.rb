@@ -325,69 +325,68 @@ module TenantRls
       end
 
       private
-
-      def has_warden_context?(context)
-        # Fast check for Warden context
-        context[:request] &&
-        context[:request].respond_to?(:env) &&
-        context[:request].env&.dig('warden')
-      end
-
-      def has_sidekiq_context?(context)
-        # Fast check for Sidekiq context using safe thread variables
-        TenantRls::Job::ThreadContextManager.in_sidekiq_context? ||
-        context[:worker_perform_args] ||
-        context[:job_data]
-      end
-
-      def resolve_sidekiq_context(context)
-        # Optimized Sidekiq resolution with direct extraction first
-        if context[:worker_perform_args]
-          direct_tenant_id = extract_direct_tenant_id_from_args(context[:worker_perform_args])
-          return direct_tenant_id if direct_tenant_id
+        def has_warden_context?(context)
+          # Fast check for Warden context
+          context[:request] &&
+          context[:request].respond_to?(:env) &&
+          context[:request].env&.dig('warden')
         end
 
-        # Use standard job context resolution
-        JobContextResolver.resolve(context)
-      end
-
-      def resolve_with_minimal_fallback(context)
-        Rails.logger.debug "[TenantRls] HybridResolver: Minimal fallback resolution" if TenantRls.configuration.debug_logging
-
-        # Try job context if any job-related data exists
-        if context[:worker_perform_args] || context[:job_data]
-          tenant_id = JobContextResolver.resolve(context)
-          return tenant_id if tenant_id
+        def has_sidekiq_context?(context)
+          # Fast check for Sidekiq context using safe thread variables
+          TenantRls::Job::ThreadContextManager.in_sidekiq_context? ||
+          context[:worker_perform_args] ||
+          context[:job_data]
         end
 
-        # Try Warden without strict context check (fallback)
-        tenant_id = WardenResolver.resolve(context)
-        return tenant_id if tenant_id
-
-        # Last resort: manual
-        ManualResolver.resolve(context)
-      end
-
-      def extract_direct_tenant_id_from_args(args)
-        # Optimized: Extract tenant_id directly from perform args (fast path)
-        return nil unless args.is_a?(Array) && !args.empty?
-
-        tenant_id_column = TenantRls.configuration.tenant_id_column
-
-        # Scan arguments efficiently for potential tenant IDs
-        args.each do |arg|
-          if arg.is_a?(Integer) && arg > 0
-            Rails.logger.debug "[TenantRls] HybridResolver: Found direct tenant_id: #{arg}" if TenantRls.configuration.debug_logging
-            return arg
-          elsif arg.is_a?(Hash)
-            # Check for configured tenant id column
-            value = arg[tenant_id_column] || arg[tenant_id_column.to_s]
-            return value if value.is_a?(Integer) && value > 0
+        def resolve_sidekiq_context(context)
+          # Optimized Sidekiq resolution with direct extraction first
+          if context[:worker_perform_args]
+            direct_tenant_id = extract_direct_tenant_id_from_args(context[:worker_perform_args])
+            return direct_tenant_id if direct_tenant_id
           end
+
+          # Use standard job context resolution
+          JobContextResolver.resolve(context)
         end
 
-        nil
-      end
+        def resolve_with_minimal_fallback(context)
+          Rails.logger.debug "[TenantRls] HybridResolver: Minimal fallback resolution" if TenantRls.configuration.debug_logging
+
+          # Try job context if any job-related data exists
+          if context[:worker_perform_args] || context[:job_data]
+            tenant_id = JobContextResolver.resolve(context)
+            return tenant_id if tenant_id
+          end
+
+          # Try Warden without strict context check (fallback)
+          tenant_id = WardenResolver.resolve(context)
+          return tenant_id if tenant_id
+
+          # Last resort: manual
+          ManualResolver.resolve(context)
+        end
+
+        def extract_direct_tenant_id_from_args(args)
+          # Optimized: Extract tenant_id directly from perform args (fast path)
+          return nil unless args.is_a?(Array) && !args.empty?
+
+          tenant_id_column = TenantRls.configuration.tenant_id_column
+
+          # Scan arguments efficiently for potential tenant IDs
+          args.each do |arg|
+            if arg.is_a?(Integer) && arg > 0
+              Rails.logger.debug "[TenantRls] HybridResolver: Found direct tenant_id: #{arg}" if TenantRls.configuration.debug_logging
+              return arg
+            elsif arg.is_a?(Hash)
+              # Check for configured tenant id column
+              value = arg[tenant_id_column] || arg[tenant_id_column.to_s]
+              return value if value.is_a?(Integer) && value > 0
+            end
+          end
+
+          nil
+        end
     end
   end
 end

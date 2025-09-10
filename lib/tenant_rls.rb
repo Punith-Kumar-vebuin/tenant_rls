@@ -3,6 +3,8 @@ require 'tenant_rls/configuration'
 require 'tenant_rls/current'
 require 'tenant_rls/tenant_resolver'
 require 'tenant_rls/tenant_context_manager'
+require 'tenant_rls/thread_context_manager'
+require 'tenant_rls/thread_extensions'
 require 'tenant_rls/job'
 require 'tenant_rls/controller'
 require 'tenant_rls/context'
@@ -24,5 +26,22 @@ module TenantRls
 
   def self.reset!
     Current.reset
+  end
+
+  # Convenience methods for thread-safe operations
+  def self.thread_with_context(&block)
+    ThreadContextManager.with_tenant_context(&block)
+  end
+
+  def self.thread_with_context_and_connection(&block)
+    ThreadContextManager.with_tenant_context_and_connection(&block)
+  end
+
+  def self.capture_context
+    ThreadContextManager.capture_current_context
+  end
+
+  def self.restore_context(context, &block)
+    ThreadContextManager.restore_context_in_thread(context, &block)
   end
 end

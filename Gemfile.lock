@@ -3,6 +3,7 @@ PATH
   specs:
     tenant_rls (0.1.0)
       activesupport (>= 4.0)
+      concurrent-ruby (~> 1.2)
       rails (>= 4.0)
 
 GEM

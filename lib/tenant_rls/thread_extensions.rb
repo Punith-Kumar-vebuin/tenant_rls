@@ -33,17 +33,61 @@ module TenantRls
         TenantRls::ThreadContextManager.with_tenant_context_and_connection(&block)
       end
 
-      # Creates a new thread and warns if tenant context might be lost
-      # This maintains backward compatibility while alerting to potential issues
+      # Automatic Thread.new with tenant context preservation
+      # This replaces the original Thread.new to automatically capture and restore tenant context
+      # Works transparently - developers can use Thread.new normally and tenant context is preserved
       #
       # @param args [Array] Arguments passed to original Thread.new
-      # @yield Block to execute in new thread
-      # @return [Thread] The created thread
-      def new_with_tenant_warning(*args, &block)
-        if TenantRls::Current.tenant_id.present? && !Thread.current[:tenant_rls_context_preserved]
-          Rails.logger.warn "[TenantRls] Thread.new called with active tenant context (#{TenantRls::Current.tenant_id}) - consider using Thread.with_tenant_context instead"
+      # @yield Block to execute in new thread with tenant context preserved
+      # @return [Thread] The created thread with tenant context
+      def new_with_tenant_context(*args, &block)
+        # Check if we have tenant context to preserve
+        tenant_id = TenantRls::Current.tenant_id
+        if tenant_id && tenant_id != '' && tenant_id.to_s.strip != ''
+          # Capture current context before thread creation
+          context = TenantRls::ThreadContextManager.capture_current_context
+          
+          if TenantRls.configuration.debug_logging
+            Rails.logger.debug "[TenantRls] Auto-capturing tenant context for Thread.new: tenant_id=#{context[:tenant_id]}"
+          end
+          
+          # Create thread with automatic tenant context restoration
+          new_without_tenant_context(*args) do
+            thread_execution = -> do
+              begin
+                # Restore tenant context in the new thread
+                TenantRls::Current.tenant_id = context[:tenant_id]
+                TenantRls::Current.user = context[:user]
+                
+                # Set PostgreSQL RLS variable for the thread
+                ApplicationRecord.with_tenant(context[:tenant_id]) do
+                  if TenantRls.configuration.debug_logging
+                    Rails.logger.debug "[TenantRls] Auto-restored tenant_id=#{context[:tenant_id]} in Thread.new"
+                  end
+                  
+                  # Execute the original block with full Rails environment
+                  yield if block_given?
+                end
+              rescue => e
+                Rails.logger.error "[TenantRls] Error in auto-tenant Thread.new: #{e.message}"
+                raise
+              ensure
+                # Clean up thread-local variables
+                TenantRls::Current.reset if defined?(TenantRls::Current)
+              end
+            end
+            
+            # Use database connection if configured (default: true for safety)
+            if TenantRls.configuration.auto_thread_with_connection != false
+              ActiveRecord::Base.connection_pool.with_connection(&thread_execution)
+            else
+              thread_execution.call
+            end
+          end
+        else
+          # No tenant context, use original Thread.new behavior
+          new_without_tenant_context(*args, &block)
         end
-        new_without_tenant_warning(*args, &block)
       end
     end
 
@@ -72,9 +116,12 @@ class Thread
   extend TenantRls::ThreadExtensions::ThreadClassExtensions
   include TenantRls::ThreadExtensions::ThreadInstanceExtensions
 
-  # Optional: Enable warnings for Thread.new usage (comment out if too noisy)
-  # class << self
-  #   alias_method :new_without_tenant_warning, :new
-  #   alias_method :new, :new_with_tenant_warning
-  # end
+  # Enable automatic tenant context preservation for Thread.new (if configured)
+  # This makes Thread.new automatically inherit tenant context - NO CODE CHANGES NEEDED!
+  if TenantRls.configuration.auto_thread_tenant_context
+    class << self
+      alias_method :new_without_tenant_context, :new
+      alias_method :new, :new_with_tenant_context
+    end
+  end
 end

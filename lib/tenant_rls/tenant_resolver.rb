@@ -7,7 +7,7 @@ module TenantRls
         tenant_id = resolver.resolve(context)
 
         if TenantRls.is_debugging?
-          Rails.logger.info "[TenantRls] Resolved tenant_id=#{tenant_id.inspect} using strategy=#{strategy}"
+          Rails.logger.info { "[TenantRls] Resolved tenant_id=#{tenant_id.inspect} using strategy=#{strategy}" }
         end
         tenant_id
       end
@@ -174,7 +174,7 @@ module TenantRls
 
         # Only log in debug mode to avoid noise
         if TenantRls.is_debugging?
-          Rails.logger.debug '[TenantRls] No tenant_id resolved from job context'
+          Rails.logger.debug { '[TenantRls] No tenant_id resolved from job context' }
         end
         nil
       end
@@ -223,7 +223,7 @@ module TenantRls
           JSON.parse(json_string)
         rescue JSON::ParserError => e
           if TenantRls.is_debugging?
-            Rails.logger.debug "[TenantRls] JSON parsing failed: #{e.message}"
+            Rails.logger.debug { "[TenantRls] JSON parsing failed: #{e.message}" }
           end
           nil
         end
@@ -311,13 +311,13 @@ module TenantRls
       def resolve(context = {})
         # Optimized hybrid resolution: Warden first, then Sidekiq
         if TenantRls.is_debugging?
-          Rails.logger.debug '[TenantRls] HybridResolver: Starting resolution'
+          Rails.logger.debug { '[TenantRls] HybridResolver: Starting resolution' }
         end
 
         # Priority 1: Try Warden first (fast web request detection)
         if has_warden_context?(context)
           if TenantRls.is_debugging?
-            Rails.logger.debug '[TenantRls] HybridResolver: Using Warden strategy'
+            Rails.logger.debug { '[TenantRls] HybridResolver: Using Warden strategy' }
           end
           tenant_id = WardenResolver.resolve(context)
           return tenant_id if tenant_id
@@ -326,7 +326,7 @@ module TenantRls
         # Priority 2: Try Sidekiq context (job processing)
         if has_sidekiq_context?(context)
           if TenantRls.is_debugging?
-            Rails.logger.debug '[TenantRls] HybridResolver: Using Sidekiq strategy'
+            Rails.logger.debug { '[TenantRls] HybridResolver: Using Sidekiq strategy' }
           end
           return resolve_sidekiq_context(context)
         end
@@ -363,7 +363,7 @@ module TenantRls
 
         def resolve_with_minimal_fallback(context)
           if TenantRls.is_debugging?
-            Rails.logger.debug '[TenantRls] HybridResolver: Minimal fallback resolution'
+            Rails.logger.debug { '[TenantRls] HybridResolver: Minimal fallback resolution' }
           end
 
           # Try job context if any job-related data exists
@@ -390,7 +390,7 @@ module TenantRls
           args.each do |arg|
             if arg.is_a?(Integer) && arg > 0
               if TenantRls.is_debugging?
-                Rails.logger.debug "[TenantRls] HybridResolver: Found direct tenant_id: #{arg}"
+                Rails.logger.debug { "[TenantRls] HybridResolver: Found direct tenant_id: #{arg}" }
               end
               return arg
             elsif arg.is_a?(Hash)

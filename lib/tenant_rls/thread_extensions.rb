@@ -32,7 +32,7 @@ module TenantRls
           context = TenantRls::ThreadContextManager.capture_current_context
 
           if TenantRls.is_debugging?
-            Rails.logger.debug "[TenantRls] Auto-capturing tenant context for Thread.new: tenant_id=#{context[:tenant_id]}"
+            Rails.logger.debug { "[TenantRls] Auto-capturing tenant context for Thread.new: tenant_id=#{context[:tenant_id]}" }
           end
 
           # Create thread with automatic tenant context restoration
@@ -43,7 +43,7 @@ module TenantRls
             TenantRls::Current.user = context[:user]
             
             if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
-              Rails.logger.debug "[TenantRls] Auto-restored tenant_id=#{context[:tenant_id]} in Thread.new"
+              Rails.logger.debug { "[TenantRls] Auto-restored tenant_id=#{context[:tenant_id]} in Thread.new" }
             end
 
             # Execute the original block - Rails will handle DB connections automatically

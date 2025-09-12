@@ -79,14 +79,14 @@ module TenantRls
         begin
           if self.class.to_s.match(/Job/i)
             if TenantRls.is_debugging?
-              Rails.logger.debug "[TenantRls] Sidekiq worker perform called with args: #{args.inspect}"
+              Rails.logger.debug { "[TenantRls] Sidekiq worker perform called with args: #{args.inspect}" }
             end
             around_perform_with_tenant_context(*args) do
               super(*args)
             end
           else
             if TenantRls.is_debugging?
-              Rails.logger.debug "[TenantRls] Sidekiq worker perform called with args: #{args.inspect}"
+              Rails.logger.debug { "[TenantRls] Sidekiq worker perform called with args: #{args.inspect}" }
             end
             execute_with_tenant_context(type: :worker, args: args) do
               super(*args)
@@ -103,7 +103,7 @@ module TenantRls
 
       begin
         if TenantRls.is_debugging?
-          Rails.logger.debug "[TenantRls] Job perform called with args: #{args.inspect}"
+          Rails.logger.debug { "[TenantRls] Job perform called with args: #{args.inspect}" }
         end
 
         job_data = args.first
@@ -111,7 +111,7 @@ module TenantRls
           begin
             parsed_data = from_job_data(job_data)
             if TenantRls.is_debugging?
-              Rails.logger.debug "[TenantRls] Parsed job data using from_job_data: #{parsed_data.class}"
+              Rails.logger.debug { "[TenantRls] Parsed job data using from_job_data: #{parsed_data.class}" }
             end
           rescue => e
             Rails.logger.warn "[TenantRls] Failed to parse job data with from_job_data: #{e.message}"
@@ -153,7 +153,7 @@ module TenantRls
 
       if tenant_id.present?
         ApplicationRecord.connection.execute("SET tenant_rls.tenant_id = #{ApplicationRecord.connection.quote(tenant_id)}")
-        Rails.logger.info "[TenantRls] ▶ SET tenant_rls.tenant_id=#{tenant_id.inspect} for job session (legacy)"
+        Rails.logger.info { "[TenantRls] ▶ SET tenant_rls.tenant_id=#{tenant_id.inspect} for job session (legacy)" }
       else
         Rails.logger.warn '[TenantRls] No tenant_id to set for legacy job session'
       end
@@ -170,13 +170,13 @@ module TenantRls
       tenant_id = TenantRls::Current.tenant_id
       user = TenantRls::Current.user
 
-      Rails.logger.info "[TenantRls] #{message}: tenant_id=#{tenant_id.inspect}, user=#{user.inspect}"
+      Rails.logger.info { "[TenantRls] #{message}: tenant_id=#{tenant_id.inspect}, user=#{user.inspect}" }
 
       if tenant_id.present?
         begin
           result = ApplicationRecord.connection.execute('SHOW tenant_rls.tenant_id').first
           pg_setting = result['tenant_rls.tenant_id'] if result
-          Rails.logger.info "[TenantRls] PostgreSQL setting: tenant_rls.tenant_id=#{pg_setting.inspect}"
+          Rails.logger.info { "[TenantRls] PostgreSQL setting: tenant_rls.tenant_id=#{pg_setting.inspect}" }
 
           if pg_setting.to_s != tenant_id.to_s
             Rails.logger.error "[TenantRls] MISMATCH: Current=#{tenant_id}, PostgreSQL=#{pg_setting}"

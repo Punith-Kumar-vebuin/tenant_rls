@@ -11,7 +11,7 @@ module TenantRls
         user = extract_user_from_context_data(context_data, context)
         context_type = determine_context_type(context_data)
 
-        Rails.logger.info "[TenantRls] #{context_type} tenant_id=#{tenant_id.inspect} using strategy=#{TenantRls.configuration.tenant_resolver_strategy}"
+        Rails.logger.info { "[TenantRls] #{context_type} tenant_id=#{tenant_id.inspect} using strategy=#{TenantRls.configuration.tenant_resolver_strategy}" }
 
         if tenant_id.blank?
           Rails.logger.warn "[TenantRls] WARNING: No tenant_id resolved for #{context_type} - RLS will not be applied!"
@@ -21,12 +21,12 @@ module TenantRls
         TenantRls::Current.tenant_id = tenant_id
 
         ApplicationRecord.with_tenant(tenant_id) do
-          Rails.logger.info "[TenantRls] ▶ SET tenant_rls.tenant_id=#{tenant_id.inspect} for #{context_type}"
+          Rails.logger.info { "[TenantRls] ▶ SET tenant_rls.tenant_id=#{tenant_id.inspect} for #{context_type}" }
           verify_rls_execution(tenant_id) if TenantRls.is_debugging?
           yield
         end
       ensure
-        Rails.logger.info "[TenantRls] ◀ RESET tenant_rls.tenant_id=#{tenant_id.inspect} for #{context_type}"
+        Rails.logger.info { "[TenantRls] ◀ RESET tenant_rls.tenant_id=#{tenant_id.inspect} for #{context_type}" }
         TenantRls::Current.reset
       end
 

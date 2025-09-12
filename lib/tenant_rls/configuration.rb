@@ -1,14 +1,13 @@
 module TenantRls
   class Configuration
     attr_accessor :tenant_resolver_strategy, :tenant_id_column, :debug_logging, 
-                  :auto_thread_tenant_context, :auto_thread_with_connection
+                  :auto_thread_tenant_context
 
     def initialize
       @tenant_resolver_strategy = :warden
       @tenant_id_column = :company_id
       @debug_logging = false
       @auto_thread_tenant_context = true
-      @auto_thread_with_connection = true
     end
 
     def valid_strategies

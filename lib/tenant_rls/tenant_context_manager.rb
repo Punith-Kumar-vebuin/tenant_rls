@@ -22,7 +22,7 @@ module TenantRls
 
         ApplicationRecord.with_tenant(tenant_id) do
           Rails.logger.info "[TenantRls] ▶ SET tenant_rls.tenant_id=#{tenant_id.inspect} for #{context_type}"
-          verify_rls_execution(tenant_id) if TenantRls.configuration.debug_logging
+          verify_rls_execution(tenant_id) if TenantRls.is_debugging?
           yield
         end
       ensure

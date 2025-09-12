@@ -1,6 +1,6 @@
 module TenantRls
   class Configuration
-    attr_accessor :tenant_resolver_strategy, :tenant_id_column, :debug_logging, 
+    attr_accessor :tenant_resolver_strategy, :tenant_id_column, :debug_logging,
                   :auto_thread_tenant_context
 
     def initialize

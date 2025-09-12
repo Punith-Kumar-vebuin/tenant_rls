@@ -5,16 +5,15 @@ module TenantRls
   module ThreadExtensions
     # Extends the Thread class with tenant-aware methods
     module ThreadClassExtensions
-
       # DEPRECATED: Use Thread.new directly instead - it now automatically preserves tenant context
       def with_tenant_context(&block)
-        Rails.logger.warn "[TenantRls] Thread.with_tenant_context is deprecated - use Thread.new directly" if defined?(Rails) && Rails.logger
+        Rails.logger.warn '[TenantRls] Thread.with_tenant_context is deprecated - use Thread.new directly' if defined?(Rails) && Rails.logger
         TenantRls::ThreadContextManager.with_tenant_context(&block)
       end
 
-      # DEPRECATED: Use Thread.new directly instead - it now automatically preserves tenant context  
+      # DEPRECATED: Use Thread.new directly instead - it now automatically preserves tenant context
       def with_tenant_context_and_connection(&block)
-        Rails.logger.warn "[TenantRls] Thread.with_tenant_context_and_connection is deprecated - use Thread.new directly" if defined?(Rails) && Rails.logger
+        Rails.logger.warn '[TenantRls] Thread.with_tenant_context_and_connection is deprecated - use Thread.new directly' if defined?(Rails) && Rails.logger
         TenantRls::ThreadContextManager.with_tenant_context(&block)
       end
 
@@ -31,36 +30,34 @@ module TenantRls
         if tenant_id && tenant_id != '' && tenant_id.to_s.strip != ''
           # Capture current context before thread creation
           context = TenantRls::ThreadContextManager.capture_current_context
-          
-          if TenantRls.configuration.debug_logging
+
+          if TenantRls.is_debugging?
             Rails.logger.debug "[TenantRls] Auto-capturing tenant context for Thread.new: tenant_id=#{context[:tenant_id]}"
           end
-          
+
           # Create thread with automatic tenant context restoration
           # LIGHTWEIGHT: No connection pooling - let Rails handle connections per operation
           new_without_tenant_context(*args) do
-            begin
-              # Restore tenant context in the new thread
-              TenantRls::Current.tenant_id = context[:tenant_id]
-              TenantRls::Current.user = context[:user]
-              
-              if TenantRls.configuration.debug_logging && defined?(Rails) && Rails.logger
-                Rails.logger.debug "[TenantRls] Auto-restored tenant_id=#{context[:tenant_id]} in Thread.new"
-              end
-              
-              # Execute the original block - Rails will handle DB connections automatically
-              yield if block_given?
-              
-            rescue => e
-              if defined?(Rails) && Rails.logger
-                Rails.logger.error "[TenantRls] Error in auto-tenant Thread.new: #{e.class}: #{e.message}"
-                Rails.logger.error "[TenantRls] Backtrace: #{e.backtrace&.first(3)&.join('\n  ')}"
-              end
-              raise
-            ensure
-              # Clean up thread-local variables
-              TenantRls::Current.reset if defined?(TenantRls::Current)
+            # Restore tenant context in the new thread
+            TenantRls::Current.tenant_id = context[:tenant_id]
+            TenantRls::Current.user = context[:user]
+            
+            if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
+              Rails.logger.debug "[TenantRls] Auto-restored tenant_id=#{context[:tenant_id]} in Thread.new"
             end
+
+            # Execute the original block - Rails will handle DB connections automatically
+            yield if block_given?
+
+          rescue => e
+            if defined?(Rails) && Rails.logger
+              Rails.logger.error "[TenantRls] Error in auto-tenant Thread.new: #{e.class}: #{e.message}"
+              Rails.logger.error "[TenantRls] Backtrace: #{e.backtrace&.first(3)&.join('\n  ')}"
+            end
+            raise
+          ensure
+            # Clean up thread-local variables
+            TenantRls::Current.reset if defined?(TenantRls::Current)
           end
         else
           # No tenant context, use original Thread.new behavior
@@ -102,9 +99,9 @@ class Thread
         alias_method :new_without_tenant_context, :new
         alias_method :new, :new_with_tenant_context
       end
-      
+
       if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
-        Rails.logger.info "[TenantRls] Automatic Thread.new tenant context preservation enabled"
+        Rails.logger.info '[TenantRls] Automatic Thread.new tenant context preservation enabled'
       end
     end
   rescue => e
@@ -112,7 +109,7 @@ class Thread
     if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
       Rails.logger.error "[TenantRls] Failed to enable auto Thread.new patching: #{e.message}"
     else
-      puts "[TenantRls] Failed to enable auto Thread.new patching: #{e.message}"
+      Rails.logger.error "[TenantRls] Failed to enable auto Thread.new patching: #{e.message}"
     end
   end
 end

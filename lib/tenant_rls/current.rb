@@ -25,14 +25,13 @@ module TenantRls
       end
 
       private
+        def user_var
+          @user_var ||= Concurrent::ThreadLocalVar.new
+        end
 
-      def user_var
-        @user_var ||= Concurrent::ThreadLocalVar.new
-      end
-
-      def tenant_id_var
-        @tenant_id_var ||= Concurrent::ThreadLocalVar.new
-      end
+        def tenant_id_var
+          @tenant_id_var ||= Concurrent::ThreadLocalVar.new
+        end
     end
   end
 end

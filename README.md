@@ -39,7 +39,7 @@ bundle install
 # app/models/application_record.rb
 class ApplicationRecord < ActiveRecord::Base
   primary_abstract_class
-  
+
   # Enable RLS context management
   extend TenantRls::Context if defined?(TenantRls)
 end
@@ -136,7 +136,7 @@ The gem automatically preserves tenant context when creating new threads:
 # Tenant context is automatically preserved in threads
 def background_processing
   TenantRls::Current.tenant_id = 12345
-  
+
   Thread.new do
     # tenant_id is automatically available here
     SomeModel.create(name: "example") # Uses proper tenant isolation
@@ -153,7 +153,7 @@ end
 class ExampleWorker
   include Sidekiq::Worker
   include TenantRls::Job
-  
+
   def perform(data)
     # Tenant context automatically available
     SomeModel.create(data)
@@ -166,7 +166,7 @@ end
 ```ruby
 class ExampleJob < ApplicationJob
   include TenantRls::Job
-  
+
   def perform(data)
     # Tenant context automatically available
     SomeModel.create(data)
@@ -297,8 +297,8 @@ Thread.new { puts TenantRls::Current.tenant_id }.join # Should output: 123
 SHOW tenant_rls.tenant_id;
 
 -- Verify RLS policies are active
-SELECT schemaname, tablename, policyname, permissive, roles, cmd, qual 
-FROM pg_policies 
+SELECT schemaname, tablename, policyname, permissive, roles, cmd, qual
+FROM pg_policies
 WHERE schemaname = 'public';
 ```
 

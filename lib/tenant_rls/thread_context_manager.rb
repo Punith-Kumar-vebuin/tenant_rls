@@ -12,16 +12,16 @@ module TenantRls
     def capture_current_context
       tenant_id = TenantRls::Current.tenant_id
       user = TenantRls::Current.user
-      
-      if TenantRls.configuration.debug_logging
+
+      if TenantRls.is_debugging?
         Rails.logger.debug "[TenantRls] Capturing thread context: tenant_id=#{tenant_id.inspect}, user_present=#{user.present?}"
       end
-      
+
       {
         tenant_id: tenant_id,
         user: user,
         strategy: TenantRls.configuration.tenant_resolver_strategy,
-        captured_at: Time.now
+        captured_at: Time.zone.now
       }
     end
 
@@ -37,20 +37,18 @@ module TenantRls
     # Returns: Thread object
     def with_tenant_context(&block)
       context = capture_current_context
-      
-      if TenantRls.configuration.debug_logging
+
+      if TenantRls.is_debugging?
         Rails.logger.debug "[TenantRls] Creating thread with tenant context: tenant_id=#{context[:tenant_id].inspect}"
       end
 
       Thread.new do
-        begin
-          restore_context_in_thread(context, &block)
-        ensure
-          if TenantRls.configuration.debug_logging
-            Rails.logger.debug "[TenantRls] Cleaning up thread context: tenant_id=#{context[:tenant_id].inspect}"
-          end
-          TenantRls::Current.reset
+        restore_context_in_thread(context, &block)
+      ensure
+        if TenantRls.is_debugging?
+          Rails.logger.debug "[TenantRls] Cleaning up thread context: tenant_id=#{context[:tenant_id].inspect}"
         end
+        TenantRls::Current.reset
       end
     end
 
@@ -65,24 +63,22 @@ module TenantRls
     # Returns: Thread object
     def with_tenant_context_and_connection(&block)
       context = capture_current_context
-      
-      if TenantRls.configuration.debug_logging
-        Rails.logger.debug "[TenantRls] Creating thread with DB connection: tenant_id=#{context[:tenant_id].inspect}"
+
+      if TenantRls.is_debugging?
+        Rails.logger.debug { "[TenantRls] Creating thread with DB connection: tenant_id=#{context[:tenant_id].inspect}" }
       end
 
       Thread.new do
         ActiveRecord::Base.connection_pool.with_connection do
-          begin
-            if TenantRls.configuration.debug_logging
-              Rails.logger.debug "[TenantRls] Acquired DB connection in thread for tenant_id=#{context[:tenant_id].inspect}"
-            end
-            restore_context_in_thread(context, &block)
-          ensure
-            if TenantRls.configuration.debug_logging
-              Rails.logger.debug "[TenantRls] Cleaning up thread context and DB connection: tenant_id=#{context[:tenant_id].inspect}"
-            end
-            TenantRls::Current.reset
+          if TenantRls.is_debugging?
+            Rails.logger.debug { "[TenantRls] Acquired DB connection in thread for tenant_id=#{context[:tenant_id].inspect}" }
           end
+          restore_context_in_thread(context, &block)
+        ensure
+          if TenantRls.is_debugging?
+            Rails.logger.debug { "[TenantRls] Cleaning up thread context and DB connection: tenant_id=#{context[:tenant_id].inspect}" }
+          end
+          TenantRls::Current.reset
         end
       end
     end
@@ -99,14 +95,14 @@ module TenantRls
 
       # Skip if no tenant context was captured
       if tenant_id.blank?
-        if TenantRls.configuration.debug_logging
-          Rails.logger.warn "[TenantRls] No tenant_id to restore in thread context"
+        if TenantRls.is_debugging?
+          Rails.logger.warn '[TenantRls] No tenant_id to restore in thread context'
         end
         return
       end
 
-      if TenantRls.configuration.debug_logging
-        Rails.logger.debug "[TenantRls] Restoring tenant context: tenant_id=#{tenant_id.inspect}"
+      if TenantRls.is_debugging?
+        Rails.logger.debug { "[TenantRls] Restoring tenant context: tenant_id=#{tenant_id.inspect}" }
       end
 
       # Set the thread-local variables
@@ -116,11 +112,11 @@ module TenantRls
       # Set the database-level tenant context for RLS if block is provided
       if block_given?
         ApplicationRecord.with_tenant(tenant_id) do
-          if TenantRls.configuration.debug_logging
+          if TenantRls.is_debugging?
             begin
               # Verify the RLS setting was applied correctly
-              db_tenant_id = ApplicationRecord.connection.execute("SHOW tenant_rls.tenant_id").first&.fetch('tenant_rls.tenant_id', 'not_set')
-              Rails.logger.debug "[TenantRls] SET tenant_rls.tenant_id=#{tenant_id.inspect} (DB verification: #{db_tenant_id})"
+              db_tenant_id = ApplicationRecord.connection.execute('SHOW tenant_rls.tenant_id').first&.fetch('tenant_rls.tenant_id', 'not_set')
+              Rails.logger.debug { "[TenantRls] SET tenant_rls.tenant_id=#{tenant_id.inspect} (DB verification: #{db_tenant_id})" }
             rescue => e
               Rails.logger.warn "[TenantRls] Could not verify DB tenant setting: #{e.message}"
             end
@@ -139,19 +135,19 @@ module TenantRls
     # @return [Thread] The created thread
     def create_context_aware_thread(context: nil, with_connection: true, &block)
       context ||= capture_current_context
-      
-      if TenantRls.configuration.debug_logging
-        connection_type = with_connection ? "with DB connection" : "without DB connection"
-        Rails.logger.debug "[TenantRls] Creating custom thread #{connection_type}: tenant_id=#{context[:tenant_id].inspect}"
+
+      if TenantRls.is_debugging?
+        connection_type = with_connection ? 'with DB connection' : 'without DB connection'
+        Rails.logger.debug { "[TenantRls] Creating custom thread #{connection_type}: tenant_id=#{context[:tenant_id].inspect}" }
       end
-      
+
       Thread.new do
         thread_block = -> do
           begin
             restore_context_in_thread(context, &block)
           ensure
-            if TenantRls.configuration.debug_logging
-              Rails.logger.debug "[TenantRls] Cleaning up custom thread context: tenant_id=#{context[:tenant_id].inspect}"
+            if TenantRls.is_debugging?
+              Rails.logger.debug { "[TenantRls] Cleaning up custom thread context: tenant_id=#{context[:tenant_id].inspect}" }
             end
             TenantRls::Current.reset
           end
@@ -189,7 +185,9 @@ module TenantRls
 
         return if tenant_id.blank?
 
-        Rails.logger.debug { "[TenantRls::ThreadContext] Setting up tenant context in thread #{Thread.current.object_id}" } if TenantRls.configuration.debug_logging
+        if TenantRls.is_debugging?
+          Rails.logger.debug "[TenantRls::ThreadContext] Setting up tenant context in thread #{Thread.current.object_id}"
+        end
 
         # Set thread-local context
         TenantRls::Current.tenant_id = tenant_id

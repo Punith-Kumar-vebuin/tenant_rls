@@ -13,7 +13,7 @@ module TenantRls
       end
     end
 
-        # DRY module for thread context management
+    # DRY module for thread context management
     module ThreadContextManager
       class << self
         def setup_sidekiq_context(worker_class_name)
@@ -43,33 +43,32 @@ module TenantRls
         end
 
         private
+          def setup_version_specific_context
+            return unless defined?(Sidekiq::VERSION)
 
-        def setup_version_specific_context
-          return unless defined?(Sidekiq::VERSION)
-
-          sidekiq_version = sidekiq_major_version
-          case sidekiq_version
-          when 5
-            Thread.current.thread_variable_set(:sidekiq_processor, true)
-          when 6, 7, 8
-            # For Sidekiq 7+, use proper processor context that doesn't conflict with logger
-            Thread.current[:sidekiq_processor] = true
-          else
-            Thread.current[:sidekiq_processor] = true
+            sidekiq_version = sidekiq_major_version
+            case sidekiq_version
+            when 5
+              Thread.current.thread_variable_set(:sidekiq_processor, true)
+            when 6, 7, 8
+              # For Sidekiq 7+, use proper processor context that doesn't conflict with logger
+              Thread.current[:sidekiq_processor] = true
+            else
+              Thread.current[:sidekiq_processor] = true
+            end
           end
-        end
 
-        def cleanup_version_specific_context
-          return unless defined?(Sidekiq::VERSION)
+          def cleanup_version_specific_context
+            return unless defined?(Sidekiq::VERSION)
 
-          if sidekiq_major_version == 5
-            Thread.current.thread_variable_set(:sidekiq_processor, nil)
+            if sidekiq_major_version == 5
+              Thread.current.thread_variable_set(:sidekiq_processor, nil)
+            end
           end
-        end
 
-        def sidekiq_major_version
-          @sidekiq_major_version ||= Sidekiq::VERSION.split('.').first.to_i
-        end
+          def sidekiq_major_version
+            @sidekiq_major_version ||= Sidekiq::VERSION.split('.').first.to_i
+          end
       end
     end
 
@@ -79,12 +78,16 @@ module TenantRls
 
         begin
           if self.class.to_s.match(/Job/i)
-            Rails.logger.debug { "[TenantRls] Sidekiq worker perform called with args: #{args.inspect}" }
+            if TenantRls.is_debugging?
+              Rails.logger.debug "[TenantRls] Sidekiq worker perform called with args: #{args.inspect}"
+            end
             around_perform_with_tenant_context(*args) do
               super(*args)
             end
           else
-            Rails.logger.debug { "[TenantRls] Sidekiq worker perform called with args: #{args.inspect}" }
+            if TenantRls.is_debugging?
+              Rails.logger.debug "[TenantRls] Sidekiq worker perform called with args: #{args.inspect}"
+            end
             execute_with_tenant_context(type: :worker, args: args) do
               super(*args)
             end
@@ -99,13 +102,17 @@ module TenantRls
       ThreadContextManager.setup_sidekiq_context(self.class.name)
 
       begin
-        Rails.logger.debug { "[TenantRls] Job perform called with args: #{args.inspect}" }
+        if TenantRls.is_debugging?
+          Rails.logger.debug "[TenantRls] Job perform called with args: #{args.inspect}"
+        end
 
         job_data = args.first
         if respond_to?(:from_job_data) && job_data
           begin
             parsed_data = from_job_data(job_data)
-            Rails.logger.debug { "[TenantRls] Parsed job data using from_job_data: #{parsed_data.class}" }
+            if TenantRls.is_debugging?
+              Rails.logger.debug "[TenantRls] Parsed job data using from_job_data: #{parsed_data.class}"
+            end
           rescue => e
             Rails.logger.warn "[TenantRls] Failed to parse job data with from_job_data: #{e.message}"
             parsed_data = job_data

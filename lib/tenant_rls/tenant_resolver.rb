@@ -6,7 +6,9 @@ module TenantRls
         resolver = resolver_for_strategy(strategy)
         tenant_id = resolver.resolve(context)
 
-        Rails.logger.info "[TenantRls] Resolved tenant_id=#{tenant_id.inspect} using strategy=#{strategy}" if TenantRls.configuration.debug_logging
+        if TenantRls.is_debugging?
+          Rails.logger.info "[TenantRls] Resolved tenant_id=#{tenant_id.inspect} using strategy=#{strategy}"
+        end
         tenant_id
       end
 
@@ -171,125 +173,128 @@ module TenantRls
         end
 
         # Only log in debug mode to avoid noise
-        Rails.logger.debug "[TenantRls] No tenant_id resolved from job context" if TenantRls.configuration.debug_logging
+        if TenantRls.is_debugging?
+          Rails.logger.debug '[TenantRls] No tenant_id resolved from job context'
+        end
         nil
       end
 
       private
+        def extract_tenant_from_worker_args(args)
+          # Optimized: Fast scanning for tenant IDs in worker arguments
+          return nil unless args.is_a?(Array) && !args.empty?
 
-      def extract_tenant_from_worker_args(args)
-        # Optimized: Fast scanning for tenant IDs in worker arguments
-        return nil unless args.is_a?(Array) && !args.empty?
+          # Fast path: scan for integers (most common pattern)
+          args.reverse_each do |arg|
+            return arg if arg.is_a?(Integer) && arg > 0
+          end
 
-        # Fast path: scan for integers (most common pattern)
-        args.reverse_each do |arg|
-          return arg if arg.is_a?(Integer) && arg > 0
+          # Slower path: check hash arguments for configured column
+          tenant_id_column = TenantRls.configuration.tenant_id_column
+          args.each do |arg|
+            next unless arg.is_a?(Hash)
+            value = arg[tenant_id_column] || arg[tenant_id_column.to_s]
+            return value if value.is_a?(Integer) && value > 0
+          end
+
+          nil
         end
 
-        # Slower path: check hash arguments for configured column
-        tenant_id_column = TenantRls.configuration.tenant_id_column
-        args.each do |arg|
-          next unless arg.is_a?(Hash)
-          value = arg[tenant_id_column] || arg[tenant_id_column.to_s]
+        def extract_tenant_from_job_data(job_data)
+          return nil unless job_data
+
+          # Fast path: handle string JSON data
+          if job_data.is_a?(String)
+            parsed_data = parse_json_safely(job_data)
+            return extract_tenant_from_job_data(parsed_data) if parsed_data
+            return nil
+          end
+
+          # Optimized hash processing
+          if job_data.is_a?(Hash)
+            return extract_tenant_from_hash(job_data)
+          end
+
+          # Object-based data (DeepHashie, etc.)
+          extract_tenant_from_object(job_data)
+        end
+
+        def parse_json_safely(json_string)
+          JSON.parse(json_string)
+        rescue JSON::ParserError => e
+          if TenantRls.is_debugging?
+            Rails.logger.debug "[TenantRls] JSON parsing failed: #{e.message}"
+          end
+          nil
+        end
+
+        def extract_tenant_from_hash(job_data)
+          tenant_id_column = TenantRls.configuration.tenant_id_column
+
+          # Priority 1: Direct tenant id column (fastest)
+          value = job_data[tenant_id_column] || job_data[tenant_id_column.to_s]
           return value if value.is_a?(Integer) && value > 0
-        end
 
-        nil
-      end
+          # Priority 2: Nested tenant object by configured key
+          tenant_object_key = tenant_object_key_for_column(tenant_id_column)
+          tenant_obj = job_data[tenant_object_key] || job_data[tenant_object_key.to_s]
 
-      def extract_tenant_from_job_data(job_data)
-        return nil unless job_data
-
-        # Fast path: handle string JSON data
-        if job_data.is_a?(String)
-          parsed_data = parse_json_safely(job_data)
-          return extract_tenant_from_job_data(parsed_data) if parsed_data
-          return nil
-        end
-
-        # Optimized hash processing
-        if job_data.is_a?(Hash)
-          return extract_tenant_from_hash(job_data)
-        end
-
-        # Object-based data (DeepHashie, etc.)
-        extract_tenant_from_object(job_data)
-      end
-
-      def parse_json_safely(json_string)
-        JSON.parse(json_string)
-      rescue JSON::ParserError => e
-        Rails.logger.debug "[TenantRls] JSON parsing failed: #{e.message}" if TenantRls.configuration.debug_logging
-        nil
-      end
-
-      def extract_tenant_from_hash(job_data)
-        tenant_id_column = TenantRls.configuration.tenant_id_column
-
-        # Priority 1: Direct tenant id column (fastest)
-        value = job_data[tenant_id_column] || job_data[tenant_id_column.to_s]
-        return value if value.is_a?(Integer) && value > 0
-
-        # Priority 2: Nested tenant object by configured key
-        tenant_object_key = tenant_object_key_for_column(tenant_id_column)
-        tenant_obj = job_data[tenant_object_key] || job_data[tenant_object_key.to_s]
-
-        if tenant_obj
-          if tenant_obj.is_a?(Integer) && tenant_obj > 0
-            return tenant_obj
-          elsif tenant_obj.is_a?(Hash)
-            id_value = tenant_obj[:id] || tenant_obj['id']
-            return id_value if id_value.is_a?(Integer) && id_value > 0
+          if tenant_obj
+            if tenant_obj.is_a?(Integer) && tenant_obj > 0
+              return tenant_obj
+            elsif tenant_obj.is_a?(Hash)
+              id_value = tenant_obj[:id] || tenant_obj['id']
+              return id_value if id_value.is_a?(Integer) && id_value > 0
+            end
           end
+
+          # Priority 3: Legacy company key support
+          extract_legacy_company_from_hash(job_data)
         end
 
-        # Priority 3: Legacy company key support
-        extract_legacy_company_from_hash(job_data)
-      end
+        def extract_tenant_from_object(job_data)
+          # Default pick first arg
+          return job_data if job_data.is_a?(Integer) && job_data > 0
 
-      def extract_tenant_from_object(job_data)
-        # Default pick first arg
-        return job_data if job_data.is_a?(Integer) && job_data > 0
+          tenant_object_key = tenant_object_key_for_column(TenantRls.configuration.tenant_id_column)
 
-        tenant_object_key = tenant_object_key_for_column(TenantRls.configuration.tenant_id_column)
-
-        # Try configured accessor first
-        if job_data.respond_to?(tenant_object_key)
-          tenant_obj = job_data.public_send(tenant_object_key)
-          if tenant_obj&.respond_to?(:id)
-            value = tenant_obj.id
-            return value if value.is_a?(Integer) && value > 0
+          # Try configured accessor first
+          if job_data.respond_to?(tenant_object_key)
+            tenant_obj = job_data.public_send(tenant_object_key)
+            if tenant_obj&.respond_to?(:id)
+              value = tenant_obj.id
+              return value if value.is_a?(Integer) && value > 0
+            end
           end
-        end
 
-        # Legacy company fallback
-        if job_data.respond_to?(:company)
-          company = job_data.company
-          if company&.respond_to?(:id)
-            value = company.id
-            return value if value.is_a?(Integer) && value > 0
+          # Legacy company fallback
+          if job_data.respond_to?(:company)
+            company = job_data.company
+            if company&.respond_to?(:id)
+              value = company.id
+              return value if value.is_a?(Integer) && value > 0
+            end
           end
+
+          nil
         end
 
-        nil
-      end
+        def extract_legacy_company_from_hash(job_data)
+          company_data = job_data[:company] || job_data['company']
+          return nil unless company_data.is_a?(Hash)
 
-      def extract_legacy_company_from_hash(job_data)
-        company_data = job_data[:company] || job_data['company']
-        return nil unless company_data.is_a?(Hash)
+          company_id = company_data[:id] || company_data['id']
+          company_id if company_id.is_a?(Integer) && company_id > 0
+        end
 
-        company_id = company_data[:id] || company_data['id']
-        company_id if company_id.is_a?(Integer) && company_id > 0
-      end
-
-      def tenant_object_key_for_column(tenant_id_column)
-        # Memoized conversion for performance
-        @tenant_object_keys ||= {}
-        @tenant_object_keys[tenant_id_column] ||=
-          tenant_id_column.to_s.end_with?('_id') ?
-          tenant_id_column.to_s.sub(/_id\z/, '').to_sym :
-          tenant_id_column
-      end
+        def tenant_object_key_for_column(tenant_id_column)
+          # Memoized conversion for performance
+          @tenant_object_keys ||= {}
+          @tenant_object_keys[tenant_id_column] ||=
+            tenant_id_column.to_s.end_with?('_id') ?
+            tenant_id_column.to_s.sub(/_id\z/, '').to_sym :
+            tenant_id_column
+        end
     end
   end
 
@@ -305,18 +310,24 @@ module TenantRls
     class << self
       def resolve(context = {})
         # Optimized hybrid resolution: Warden first, then Sidekiq
-        Rails.logger.debug "[TenantRls] HybridResolver: Starting resolution" if TenantRls.configuration.debug_logging
+        if TenantRls.is_debugging?
+          Rails.logger.debug '[TenantRls] HybridResolver: Starting resolution'
+        end
 
         # Priority 1: Try Warden first (fast web request detection)
         if has_warden_context?(context)
-          Rails.logger.debug "[TenantRls] HybridResolver: Using Warden strategy" if TenantRls.configuration.debug_logging
+          if TenantRls.is_debugging?
+            Rails.logger.debug '[TenantRls] HybridResolver: Using Warden strategy'
+          end
           tenant_id = WardenResolver.resolve(context)
           return tenant_id if tenant_id
         end
 
         # Priority 2: Try Sidekiq context (job processing)
         if has_sidekiq_context?(context)
-          Rails.logger.debug "[TenantRls] HybridResolver: Using Sidekiq strategy" if TenantRls.configuration.debug_logging
+          if TenantRls.is_debugging?
+            Rails.logger.debug '[TenantRls] HybridResolver: Using Sidekiq strategy'
+          end
           return resolve_sidekiq_context(context)
         end
 
@@ -351,7 +362,9 @@ module TenantRls
         end
 
         def resolve_with_minimal_fallback(context)
-          Rails.logger.debug "[TenantRls] HybridResolver: Minimal fallback resolution" if TenantRls.configuration.debug_logging
+          if TenantRls.is_debugging?
+            Rails.logger.debug '[TenantRls] HybridResolver: Minimal fallback resolution'
+          end
 
           # Try job context if any job-related data exists
           if context[:worker_perform_args] || context[:job_data]
@@ -376,7 +389,9 @@ module TenantRls
           # Scan arguments efficiently for potential tenant IDs
           args.each do |arg|
             if arg.is_a?(Integer) && arg > 0
-              Rails.logger.debug "[TenantRls] HybridResolver: Found direct tenant_id: #{arg}" if TenantRls.configuration.debug_logging
+              if TenantRls.is_debugging?
+                Rails.logger.debug "[TenantRls] HybridResolver: Found direct tenant_id: #{arg}"
+              end
               return arg
             elsif arg.is_a?(Hash)
               # Check for configured tenant id column

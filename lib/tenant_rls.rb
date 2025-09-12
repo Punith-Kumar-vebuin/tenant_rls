@@ -44,4 +44,9 @@ module TenantRls
   def self.restore_context(context, &block)
     ThreadContextManager.restore_context_in_thread(context, &block)
   end
+
+  # Check if debug logging is enabled
+  def self.is_debugging?
+    configuration.debug_logging == true
+  end
 end

@@ -1,15 +1,15 @@
 # TenantRls
 
-A lightweight Ruby gem providing **automatic tenant context preservation** for multi-tenant Rails applications using PostgreSQL Row-Level Security (RLS).
+A Ruby gem for implementing PostgreSQL Row-Level Security (RLS) in multi-tenant Rails applications with automatic thread-safe tenant context preservation.
 
-## Key Features
+## Features
 
-- ✅ **Automatic `Thread.new` tenant context preservation** - No code changes needed!
-- ✅ **PostgreSQL Row-Level Security (RLS) integration**
-- ✅ **Thread-safe tenant isolation**
-- ✅ **Multiple tenant resolution strategies**
-- ✅ **Compatible with Ruby 2.3+ and Rails 4.2+**
-- ✅ **Minimal performance overhead**
+- **Automatic Thread Context Preservation**: Thread.new automatically inherits tenant context without code changes
+- **PostgreSQL RLS Integration**: Direct integration with PostgreSQL Row-Level Security policies
+- **Multiple Resolution Strategies**: Support for Warden, custom authentication, background jobs, and manual tenant resolution
+- **Thread-Safe Design**: Uses Concurrent::ThreadLocalVar for thread-safe tenant isolation
+- **Background Job Support**: Automatic tenant context in Sidekiq and ActiveJob workers
+- **Rails Integration**: Seamless integration with Rails controllers and models
 
 ## Installation
 
@@ -25,9 +25,15 @@ And then execute:
 bundle install
 ```
 
+## Requirements
+
+- Ruby 2.3.8 or higher
+- Rails 4.2 or higher
+- PostgreSQL 9.5 or higher (for RLS support)
+
 ## Quick Start
 
-### 1. Configure Your ApplicationRecord
+### 1. Enable ApplicationRecord Integration
 
 ```ruby
 # app/models/application_record.rb
@@ -39,15 +45,15 @@ class ApplicationRecord < ActiveRecord::Base
 end
 ```
 
-### 2. Configure TenantRls
+### 2. Configure the Gem
 
 ```ruby
 # config/initializers/tenant_rls.rb
 TenantRls.configure do |config|
-  config.tenant_resolver_strategy = :hybrid  # or :warden, :custom_auth, :job_context, :manual
-  config.tenant_id_column = :company_id      # Your tenant ID column name
-  config.debug_logging = false               # Enable for debugging
-  config.auto_thread_tenant_context = true   # Automatic Thread.new context (recommended)
+  config.tenant_resolver_strategy = :hybrid        # Resolution strategy
+  config.tenant_id_column = :company_id           # Tenant ID column name
+  config.debug_logging = Rails.env.development?   # Debug logging
+  config.auto_thread_tenant_context = true        # Automatic thread context
 end
 ```
 
@@ -57,232 +63,302 @@ end
 # app/controllers/application_controller.rb
 class ApplicationController < ActionController::Base
   include TenantRls::Controller
-  
-  # This automatically sets tenant context for all requests
 end
 ```
 
-## Automatic Thread Context Preservation
+## PostgreSQL Setup
 
-**The gem's killer feature**: Regular `Thread.new` calls automatically preserve tenant context!
-
-### Before (Traditional Approach)
-```ruby
-# ❌ Problem: Lost tenant context in threads
-def some_background_work
-  Thread.new do
-    # tenant_id is nil here - RLS doesn't work!
-    SomeModel.create(name: "test")  # Creates record without tenant isolation
-  end
-end
-```
-
-### After (With TenantRls)
-```ruby
-# ✅ Solution: Automatic tenant context preservation
-def some_background_work
-  Thread.new do
-    # tenant_id automatically preserved! 🎉
-    SomeModel.create(name: "test")  # Creates record with proper tenant isolation
-    Rails.logger.info "Works!"     # Full Rails environment available
-    binding.pry if needed          # Debugging works perfectly
-  end
-end
-```
-
-### Real-World Example
-
-```ruby
-# app/services/export_history_service.rb
-class ExportHistoryService
-  def generate_report(export_obj)
-    # Process immediately or in background
-    if export_obj.priority == 'high'
-      process_export(export_obj)
-    else
-      # Background processing - tenant context automatically preserved!
-      Thread.new do
-        export_obj.update(status: 'ready')
-        process_export(export_obj)
-        send_notification(export_obj)
-      end
-    end
-  end
-  
-  private
-  
-  def process_export(export_obj)
-    # This works in both main thread and background thread
-    # tenant_id is automatically available via RLS
-    records = SomeModel.where(active: true)  # Automatically filtered by tenant
-    # ... export logic
-  end
-end
-```
-
-## Tenant Resolution Strategies
-
-### 1. Hybrid Strategy (Recommended)
-```ruby
-config.tenant_resolver_strategy = :hybrid
-```
-Automatically detects context: web requests, background jobs, manual setting.
-
-### 2. Warden Strategy
-```ruby
-config.tenant_resolver_strategy = :warden
-```
-For applications using Warden/Devise authentication.
-
-### 3. Custom Auth Strategy
-```ruby
-config.tenant_resolver_strategy = :custom_auth
-```
-For custom authentication systems.
-
-### 4. Manual Strategy
-```ruby
-config.tenant_resolver_strategy = :manual
-```
-For explicit tenant setting.
-
-## Manual Tenant Context
-
-```ruby
-# Set tenant context manually
-TenantRls::Current.tenant_id = 12345
-TenantRls::Current.user = current_user
-
-# Or use the block syntax
-TenantRls.with_tenant(tenant_id) do
-  # Your code here - tenant context is set
-end
-```
-
-## PostgreSQL Row-Level Security Setup
-
-### 1. Enable RLS on your tables
+### Enable RLS on Tables
 
 ```sql
--- Enable RLS
+-- Enable Row-Level Security
 ALTER TABLE your_table ENABLE ROW LEVEL SECURITY;
 
--- Create policy
+-- Create tenant isolation policy
 CREATE POLICY tenant_isolation_policy ON your_table
   USING (company_id = current_setting('tenant_rls.tenant_id')::bigint);
 ```
 
-### 2. Grant access to your application user
+### Grant Application Permissions
 
 ```sql
--- Allow your app to bypass RLS when needed (for admin operations)
-GRANT BYPASS_RLS ON your_table TO your_app_user;
+-- Allow application user to bypass RLS for administrative operations
+GRANT BYPASS_RLS ON your_table TO your_application_user;
+```
+
+## Tenant Resolution Strategies
+
+### Hybrid Strategy (Recommended)
+
+```ruby
+config.tenant_resolver_strategy = :hybrid
+```
+
+Automatically detects context from web requests, background jobs, or manual settings. Provides the most flexible tenant resolution.
+
+### Warden Strategy
+
+```ruby
+config.tenant_resolver_strategy = :warden
+```
+
+For applications using Devise/Warden authentication. Extracts tenant information from the current user.
+
+### Custom Auth Strategy
+
+```ruby
+config.tenant_resolver_strategy = :custom_auth
+```
+
+For applications with custom authentication systems. Uses `current_company` and `current_user` methods.
+
+### Job Context Strategy
+
+```ruby
+config.tenant_resolver_strategy = :job_context
+```
+
+Specifically for background job processing. Extracts tenant context from job arguments.
+
+### Manual Strategy
+
+```ruby
+config.tenant_resolver_strategy = :manual
+```
+
+Requires explicit tenant setting via `TenantRls::Current.tenant_id = value`.
+
+## Thread Context Preservation
+
+The gem automatically preserves tenant context when creating new threads:
+
+```ruby
+# Tenant context is automatically preserved in threads
+def background_processing
+  TenantRls::Current.tenant_id = 12345
+  
+  Thread.new do
+    # tenant_id is automatically available here
+    SomeModel.create(name: "example") # Uses proper tenant isolation
+    Rails.logger.info "Processing for tenant #{TenantRls::Current.tenant_id}"
+  end
+end
 ```
 
 ## Background Jobs Integration
 
-Works automatically with popular background job libraries:
-
 ### Sidekiq
+
 ```ruby
-class MyWorker
+class ExampleWorker
   include Sidekiq::Worker
-  include TenantRls::Job  # Add this line
+  include TenantRls::Job
   
   def perform(data)
-    # tenant_id automatically available
-    SomeModel.create(data)  # Properly isolated by tenant
+    # Tenant context automatically available
+    SomeModel.create(data)
   end
 end
 ```
 
-### Active Job
+### ActiveJob
+
 ```ruby
-class MyJob < ApplicationJob
-  include TenantRls::Job  # Add this line
+class ExampleJob < ApplicationJob
+  include TenantRls::Job
   
   def perform(data)
-    # tenant_id automatically available  
-    SomeModel.create(data)  # Properly isolated by tenant
+    # Tenant context automatically available
+    SomeModel.create(data)
   end
 end
 ```
 
-## Advanced Configuration
+## Manual Tenant Management
 
-### Disable Automatic Thread Context (if needed)
+### Setting Tenant Context
+
 ```ruby
-TenantRls.configure do |config|
-  config.auto_thread_tenant_context = false  # Disable automatic Thread.new patching
+# Set tenant globally
+TenantRls::Current.tenant_id = 12345
+TenantRls::Current.user = current_user
+
+# Block-scoped tenant context
+TenantRls.with_tenant(tenant_id) do
+  # Operations within this block use the specified tenant
+  SomeModel.all # Automatically filtered by tenant
 end
 ```
 
-### Custom Tenant ID Column
+### Checking Current Context
+
 ```ruby
-TenantRls.configure do |config|
-  config.tenant_id_column = :account_id  # Use :account_id instead of :company_id
-end
+# Get current tenant information
+tenant_id = TenantRls.current_tenant_id
+tenant_id = TenantRls::Current.tenant_id
+user = TenantRls::Current.user
+
+# Reset tenant context
+TenantRls.reset!
+TenantRls::Current.reset
+```
+
+## Configuration Options
+
+### Tenant Resolution Strategy
+
+```ruby
+# Available strategies: :hybrid, :warden, :custom_auth, :job_context, :manual
+config.tenant_resolver_strategy = :hybrid
+```
+
+### Tenant ID Column
+
+```ruby
+# Specify the column name used for tenant identification
+config.tenant_id_column = :account_id  # Default: :company_id
 ```
 
 ### Debug Logging
+
 ```ruby
-TenantRls.configure do |config|
-  config.debug_logging = true  # Enable detailed logging
+# Enable detailed logging for troubleshooting
+config.debug_logging = true
+```
+
+### Automatic Thread Context
+
+```ruby
+# Control automatic thread context preservation
+config.auto_thread_tenant_context = true  # Default: true
+```
+
+## Advanced Usage
+
+### Thread Context Management
+
+```ruby
+# Capture current context
+context = TenantRls.capture_context
+
+# Restore context in different thread
+TenantRls.restore_context(context) do
+  # Code runs with restored tenant context
+end
+
+# Create thread with explicit context management
+TenantRls.thread_with_context do
+  # Thread-safe tenant operations
 end
 ```
 
-## Troubleshooting
+### Custom Tenant Resolution
 
-### Check Current Tenant Context
+For applications with unique tenant resolution requirements:
+
 ```ruby
-# In rails console or your code
-puts "Tenant ID: #{TenantRls::Current.tenant_id}"
-puts "User: #{TenantRls::Current.user&.inspect}"
+# Override resolver methods in initializer
+module TenantRls
+  class CustomAuthResolver < BaseResolver
+    def self.resolve(context = {})
+      # Custom tenant resolution logic
+      context[:current_user]&.tenant_id
+    end
+  end
+end
 ```
 
-### Test Thread Context
+## Debugging
+
+### Enable Debug Logging
+
 ```ruby
-# Test in rails console
+TenantRls.configure do |config|
+  config.debug_logging = true
+end
+```
+
+### Check Tenant Context
+
+```ruby
+# In Rails console or application code
+puts "Current tenant: #{TenantRls::Current.tenant_id}"
+puts "Current user: #{TenantRls::Current.user&.inspect}"
+
+# Test thread context preservation
 TenantRls::Current.tenant_id = 123
-
-Thread.new do
-  puts "Thread tenant_id: #{TenantRls::Current.tenant_id}"  # Should be 123
-end.join
+Thread.new { puts TenantRls::Current.tenant_id }.join # Should output: 123
 ```
 
-### Debug Logging
-Enable debug logging to see tenant context flow:
+### Verify RLS Configuration
+
+```sql
+-- Check current tenant setting in database
+SHOW tenant_rls.tenant_id;
+
+-- Verify RLS policies are active
+SELECT schemaname, tablename, policyname, permissive, roles, cmd, qual 
+FROM pg_policies 
+WHERE schemaname = 'public';
+```
+
+## Performance Considerations
+
+- Thread context preservation has minimal overhead
+- No database connection pooling in threads - Rails handles connections per operation
+- Tenant resolution occurs once per request/job
+- Thread-local variables are automatically cleaned up
+
+## Error Handling
+
+The gem handles common error scenarios gracefully:
+
+- Missing tenant context (operations continue without RLS)
+- Invalid tenant IDs (logged and ignored)
+- Database connection issues (proper cleanup)
+- Thread creation failures (detailed error logging)
+
+## Testing
+
+### RSpec Configuration
 
 ```ruby
-TenantRls.configure { |c| c.debug_logging = true }
+# spec/rails_helper.rb
+RSpec.configure do |config|
+  config.before(:each) do
+    TenantRls::Current.reset
+  end
+end
 ```
 
-Look for log messages like:
+### Test Helper Methods
+
+```ruby
+# spec/support/tenant_helpers.rb
+module TenantHelpers
+  def with_tenant(tenant_id)
+    original_tenant = TenantRls::Current.tenant_id
+    TenantRls::Current.tenant_id = tenant_id
+    yield
+  ensure
+    TenantRls::Current.tenant_id = original_tenant
+  end
+end
+
+RSpec.configure do |config|
+  config.include TenantHelpers
+end
 ```
-[TenantRls] Capturing thread context: tenant_id=12345
-[TenantRls] Auto-restored tenant_id=12345 in Thread.new
-```
-
-## Performance
-
-- **Minimal overhead**: Only captures context when `tenant_id` is present
-- **No connection pooling**: Threads don't hold database connections
-- **Efficient cleanup**: Automatic thread-local variable cleanup
-
-## Ruby & Rails Compatibility
-
-- **Ruby**: 2.3.8, 3.0+, 3.1.4+  
-- **Rails**: 4.2+, 5.x, 6.x, 7.x, 8.x
-- **PostgreSQL**: 9.5+ (RLS support required)
 
 ## Contributing
 
 1. Fork the repository
-2. Create your feature branch (`git checkout -b my-new-feature`)
-3. Add tests for your changes
-4. Commit your changes (`git commit -am 'Add some feature'`)
-5. Push to the branch (`git push origin my-new-feature`)
-6. Create new Pull Request
+2. Create your feature branch (`git checkout -b feature/new-feature`)
+3. Write tests for your changes
+4. Ensure all tests pass (`bundle exec rspec`)
+5. Commit your changes (`git commit -am 'Add new feature'`)
+6. Push to the branch (`git push origin feature/new-feature`)
+7. Create a Pull Request
 
 ## License
 
@@ -290,12 +366,11 @@ The gem is available as open source under the [MIT License](https://opensource.o
 
 ## Changelog
 
-### v2.0.0 - Automatic Thread Context
-- ✅ **NEW**: Automatic `Thread.new` tenant context preservation
-- ✅ **IMPROVED**: Eliminated connection pool exhaustion issues  
-- ✅ **SIMPLIFIED**: Lightweight implementation with minimal overhead
-- ✅ **BREAKING**: Removed `with_tenant_context_and_connection` (use `Thread.new` directly)
+### Version 0.1.0
 
-### v1.x.x - Legacy Versions
-- Basic tenant context management
-- Manual thread context methods
+- Initial release with automatic thread context preservation
+- PostgreSQL RLS integration
+- Multiple tenant resolution strategies
+- Background job support
+- Thread-safe design with Concurrent::ThreadLocalVar
+- Rails controller and model integration

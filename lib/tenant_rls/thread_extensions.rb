@@ -41,7 +41,7 @@ module TenantRls
             # Restore tenant context in the new thread
             TenantRls::Current.tenant_id = context[:tenant_id]
             TenantRls::Current.user = context[:user]
-            
+
             if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
               Rails.logger.debug { "[TenantRls] Auto-restored tenant_id=#{context[:tenant_id]} in Thread.new" }
             end

@@ -38,26 +38,28 @@ module TenantRls
           # Create thread with automatic tenant context restoration
           # LIGHTWEIGHT: No connection pooling - let Rails handle connections per operation
           new_without_tenant_context(*args) do
-            # Restore tenant context in the new thread
-            TenantRls::Current.tenant_id = context[:tenant_id]
-            TenantRls::Current.user = context[:user]
+            begin
+              # Restore tenant context in the new thread
+              TenantRls::Current.tenant_id = context[:tenant_id]
+              TenantRls::Current.user = context[:user]
 
-            if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
-              Rails.logger.debug { "[TenantRls] Auto-restored tenant_id=#{context[:tenant_id]} in Thread.new" }
+              if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
+                Rails.logger.debug { "[TenantRls] Auto-restored tenant_id=#{context[:tenant_id]} in Thread.new" }
+              end
+
+              # Execute the original block - Rails will handle DB connections automatically
+              yield if block_given?
+
+            rescue => e
+              if defined?(Rails) && Rails.logger
+                Rails.logger.error "[TenantRls] Error in auto-tenant Thread.new: #{e.class}: #{e.message}"
+                Rails.logger.error "[TenantRls] Backtrace: #{e.backtrace&.first(3)&.join('\n  ')}"
+              end
+              raise
+            ensure
+              # Clean up thread-local variables
+              TenantRls::Current.reset if defined?(TenantRls::Current)
             end
-
-            # Execute the original block - Rails will handle DB connections automatically
-            yield if block_given?
-
-          rescue => e
-            if defined?(Rails) && Rails.logger
-              Rails.logger.error "[TenantRls] Error in auto-tenant Thread.new: #{e.class}: #{e.message}"
-              Rails.logger.error "[TenantRls] Backtrace: #{e.backtrace&.first(3)&.join('\n  ')}"
-            end
-            raise
-          ensure
-            # Clean up thread-local variables
-            TenantRls::Current.reset if defined?(TenantRls::Current)
           end
         else
           # No tenant context, use original Thread.new behavior

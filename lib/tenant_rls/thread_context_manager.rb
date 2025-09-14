@@ -43,12 +43,14 @@ module TenantRls
       end
 
       Thread.new do
-        restore_context_in_thread(context, &block)
-      ensure
-        if TenantRls.is_debugging?
-          Rails.logger.debug { "[TenantRls] Cleaning up thread context: tenant_id=#{context[:tenant_id].inspect}" }
+        begin
+          restore_context_in_thread(context, &block)
+        ensure
+          if TenantRls.is_debugging?
+            Rails.logger.debug { "[TenantRls] Cleaning up thread context: tenant_id=#{context[:tenant_id].inspect}" }
+          end
+          TenantRls::Current.reset
         end
-        TenantRls::Current.reset
       end
     end
 
@@ -70,15 +72,17 @@ module TenantRls
 
       Thread.new do
         ActiveRecord::Base.connection_pool.with_connection do
-          if TenantRls.is_debugging?
-            Rails.logger.debug { "[TenantRls] Acquired DB connection in thread for tenant_id=#{context[:tenant_id].inspect}" }
+          begin
+            if TenantRls.is_debugging?
+              Rails.logger.debug { "[TenantRls] Acquired DB connection in thread for tenant_id=#{context[:tenant_id].inspect}" }
+            end
+            restore_context_in_thread(context, &block)
+          ensure
+            if TenantRls.is_debugging?
+              Rails.logger.debug { "[TenantRls] Cleaning up thread context and DB connection: tenant_id=#{context[:tenant_id].inspect}" }
+            end
+            TenantRls::Current.reset
           end
-          restore_context_in_thread(context, &block)
-        ensure
-          if TenantRls.is_debugging?
-            Rails.logger.debug { "[TenantRls] Cleaning up thread context and DB connection: tenant_id=#{context[:tenant_id].inspect}" }
-          end
-          TenantRls::Current.reset
         end
       end
     end

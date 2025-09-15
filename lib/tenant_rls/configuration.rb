@@ -9,7 +9,7 @@ module TenantRls
       @tenant_id_column = :company_id
       @debug_logging = false
       @auto_thread_tenant_context = true          # TRUE: Easy use across repos
-      @puma_thread_connection_management = false  # Conservative for safety
+      @puma_thread_connection_management = true  # Conservative for safety
       @emergency_disable_thread_patching = false
     end
 

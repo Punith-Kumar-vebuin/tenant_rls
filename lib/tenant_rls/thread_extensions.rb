@@ -157,59 +157,76 @@ module TenantRls
       end
 
       # Determine if we should use dedicated connection management
-      # True for Puma multi-threaded environments or when explicitly enabled
+      # True for server environments, file operations, or when explicitly enabled
       def should_use_connection_management?
-        return false unless TenantRls.configuration.puma_thread_connection_management
+        # Always use connection management if explicitly enabled
+        return true if TenantRls.configuration.puma_thread_connection_management
 
-        # Detect if running in Puma (multi-threaded server)
-        defined?(Puma) || ENV['SERVER_SOFTWARE']&.include?('puma') ||
-        (defined?(Rails) && Rails.env.production? && Thread.current.name&.include?('puma'))
+        # CRITICAL: Auto-detect server environments that need connection management
+        server_environment = defined?(Puma) ||
+                            ENV['SERVER_SOFTWARE']&.include?('puma') ||
+                            ENV['RAILS_ENV'] == 'production' ||
+                            ENV['RAILS_ENV'] == 'staging' ||
+                            !Rails.env.development?
+
+        # CRITICAL: Detect long-running operations (file exports, etc.)
+        caller_stack = caller_locations(1, 10).map(&:path).join(' ')
+        long_running_operation = caller_stack.include?('export') ||
+                                caller_stack.include?('upload') ||
+                                caller_stack.include?('process_') ||
+                                caller_stack.include?('generate')
+
+        # Use connection management for server environments OR long-running operations
+        server_environment || long_running_operation
       end
 
-      # Create lightweight thread (original behavior)
+      # Create lightweight thread (IMPROVED: Better connection handling)
       def create_lightweight_thread(context, *args, &block)
         new_without_tenant_context(*args) do
-          begin
-            # Restore tenant context in the new thread (thread-local variables)
-            TenantRls::Current.tenant_id = context[:tenant_id]
-            TenantRls::Current.user = context[:user]
-
-            if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
-              Rails.logger.debug { "[TenantRls] Lightweight thread: restored tenant_id=#{context[:tenant_id]}" }
-            end
-
-            # CRITICAL: Set database session variable for RLS (required for object updates)
-            # Use ApplicationRecord.with_tenant to set PostgreSQL session variable
-            ApplicationRecord.with_tenant(context[:tenant_id]) do
-              if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
-                Rails.logger.debug { "[TenantRls] Thread: SET tenant_rls.tenant_id=#{context[:tenant_id]} on database connection" }
-              end
-
-              # Execute the original block with proper database tenant context
-              yield if block_given?
-            end
-
-          rescue => e
-            if defined?(Rails) && Rails.logger
-              Rails.logger.error "[TenantRls] Error in lightweight Thread.new: #{e.class}: #{e.message}"
-              Rails.logger.error "[TenantRls] Backtrace: #{e.backtrace&.first(3)&.join('\n  ')}"
-            end
-            raise
-          ensure
-            # Clean up thread-local variables
-            TenantRls::Current.reset if defined?(TenantRls::Current)
-
-            # CRITICAL: Reset database session variable for safety
-            # This ensures no tenant bleeding if connection is returned to pool
+          # IMPROVED: Use dedicated connection for better reliability
+          ActiveRecord::Base.connection_pool.with_connection do |connection|
             begin
-              ApplicationRecord.connection.execute('RESET tenant_rls.tenant_id') if defined?(ApplicationRecord)
+              # Restore tenant context in the new thread (thread-local variables)
+              TenantRls::Current.tenant_id = context[:tenant_id]
+              TenantRls::Current.user = context[:user]
+
               if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
-                Rails.logger.debug { '[TenantRls] Thread cleanup: RESET tenant_rls.tenant_id on database connection' }
+                Rails.logger.debug { "[TenantRls] Lightweight thread: restored tenant_id=#{context[:tenant_id]} with dedicated connection" }
               end
-            rescue => cleanup_error
-              # Log but don't raise - we're in cleanup
+
+              # CRITICAL: Set database session variable for RLS on the SAME connection
+              if context[:tenant_id] && !context[:tenant_id].to_s.strip.empty?
+                connection.execute("SET tenant_rls.tenant_id = #{connection.quote(context[:tenant_id])}")
+
+                if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
+                  Rails.logger.debug { "[TenantRls] Thread: SET tenant_rls.tenant_id=#{context[:tenant_id]} on dedicated connection" }
+                end
+              end
+
+              # Execute the original block with dedicated connection and tenant context
+              yield if block_given?
+
+            rescue => e
               if defined?(Rails) && Rails.logger
-                Rails.logger.warn "[TenantRls] Failed to reset database session in thread cleanup: #{cleanup_error.message}"
+                Rails.logger.error "[TenantRls] Error in lightweight Thread.new: #{e.class}: #{e.message}"
+                Rails.logger.error "[TenantRls] Backtrace: #{e.backtrace&.first(3)&.join('\n  ')}"
+              end
+              raise
+            ensure
+              # Clean up thread-local variables
+              TenantRls::Current.reset if defined?(TenantRls::Current)
+
+              # CRITICAL: Reset database session variable on the SAME connection
+              begin
+                connection.execute('RESET tenant_rls.tenant_id') if connection
+                if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
+                  Rails.logger.debug { '[TenantRls] Thread cleanup: RESET tenant_rls.tenant_id on same connection' }
+                end
+              rescue => cleanup_error
+                # Log but don't raise - we're in cleanup
+                if defined?(Rails) && Rails.logger
+                  Rails.logger.warn "[TenantRls] Failed to reset database session in thread cleanup: #{cleanup_error.message}"
+                end
               end
             end
           end
@@ -296,14 +313,24 @@ class Thread
   begin
     if TenantRls.configuration.auto_thread_tenant_context &&
        !TenantRls.configuration.emergency_disable_thread_patching
-      class << self
-        alias_method :new_without_tenant_context, :new
-        alias_method :new, :new_with_tenant_context
+
+      # CRITICAL: Guard against double-patching in server environments
+      # Check if we've already patched Thread.new to avoid duplicate execution
+      unless Thread.respond_to?(:new_without_tenant_context)
+        class << self
+          alias_method :new_without_tenant_context, :new
+          alias_method :new, :new_with_tenant_context
+        end
+
+        if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
+          Rails.logger.info '[TenantRls] Thread.new tenant context preservation enabled (first time)'
+        end
+      else
+        if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
+          Rails.logger.warn '[TenantRls] Thread.new already patched - skipping duplicate patching (this prevents double execution)'
+        end
       end
 
-      if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
-        Rails.logger.info '[TenantRls] Automatic Thread.new tenant context preservation enabled (selective patching)'
-      end
     elsif TenantRls.configuration.emergency_disable_thread_patching
       if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
         Rails.logger.warn '[TenantRls] Thread.new patching DISABLED by emergency_disable_thread_patching flag'

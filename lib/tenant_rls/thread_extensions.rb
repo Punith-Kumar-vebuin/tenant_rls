@@ -27,16 +27,15 @@ module TenantRls
       # @return [Thread] The created thread with tenant context
       def new_with_tenant_context(*args, &block)
         begin
-          # Skip our patching if called from Ruby's standard library (like socket.rb)
-          # This prevents interference with internal Ruby operations
-          if respond_to?(:caller_locations, true)
-            caller_locs = caller_locations(1, 5)
-            if caller_locs&.any? { |loc| loc.path.include?('/ruby/') && !loc.path.include?('/gems/') }
-              if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
-                Rails.logger.debug { "[TenantRls] Skipping tenant context for Ruby internal Thread.new from: #{caller_locs.first&.path}" }
-              end
-              return new_without_tenant_context(*args, &block)
-            end
+          # EMERGENCY DISABLE: Skip all patching if emergency flag is set
+          if TenantRls.configuration.emergency_disable_thread_patching
+            return new_without_tenant_context(*args, &block)
+          end
+          
+          # CRITICAL: Be very selective about when to apply tenant patching
+          # Only apply to user application code, not system/gem threads
+          unless should_apply_tenant_patching?
+            return new_without_tenant_context(*args, &block)
           end
 
           # Check if we have tenant context to preserve
@@ -73,6 +72,54 @@ module TenantRls
       end
 
       private
+
+      # CRITICAL: Determine if we should apply tenant patching at all
+      # Only apply to user application code, not system threads
+      def should_apply_tenant_patching?
+        # Skip if we don't have caller information
+        return false unless respond_to?(:caller_locations, true)
+        
+        caller_locs = caller_locations(1, 10) # Look deeper into call stack
+        return false unless caller_locs && !caller_locs.empty?
+        
+        # SKIP for all system/gem/internal calls
+        caller_locs.each do |loc|
+          path = loc.path.to_s
+          
+          # Skip Ruby standard library
+          return false if path.include?('/ruby/') && !path.include?('/gems/')
+          
+          # Skip all gems (including Rails internals, database adapters, etc.)
+          return false if path.include?('/gems/')
+          
+          # Skip Rails internals
+          return false if path.include?('/railties/')
+          return false if path.include?('/activerecord/')
+          return false if path.include?('/activesupport/')
+          return false if path.include?('/actionpack/')
+          
+          # Skip database adapters and connection pools
+          return false if path.include?('/pg-')
+          return false if path.include?('/mysql')
+          return false if path.include?('/sqlite')
+          return false if path.include?('/mongo')
+          
+          # Skip web servers
+          return false if path.include?('/puma/')
+          return false if path.include?('/unicorn/')
+          return false if path.include?('/thin/')
+          
+          # Skip background job processors  
+          return false if path.include?('/sidekiq/')
+          return false if path.include?('/resque/')
+        end
+        
+        # Only ALLOW for application code (app/, lib/, config/)
+        return caller_locs.any? { |loc| 
+          path = loc.path.to_s
+          path.include?('/app/') || path.include?('/lib/') || path.include?('/config/')
+        }
+      end
 
       # Determine if we should use dedicated connection management
       # True for Puma multi-threaded environments or when explicitly enabled
@@ -182,21 +229,24 @@ class Thread
   # Enable automatic tenant context preservation for Thread.new (if configured)
   # This makes Thread.new automatically inherit tenant context - NO CODE CHANGES NEEDED!
   begin
-    if TenantRls.configuration.auto_thread_tenant_context
+    if TenantRls.configuration.auto_thread_tenant_context && 
+       !TenantRls.configuration.emergency_disable_thread_patching
       class << self
         alias_method :new_without_tenant_context, :new
         alias_method :new, :new_with_tenant_context
       end
 
       if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
-        Rails.logger.info '[TenantRls] Automatic Thread.new tenant context preservation enabled'
+        Rails.logger.info '[TenantRls] Automatic Thread.new tenant context preservation enabled (selective patching)'
+      end
+    elsif TenantRls.configuration.emergency_disable_thread_patching
+      if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
+        Rails.logger.warn '[TenantRls] Thread.new patching DISABLED by emergency_disable_thread_patching flag'
       end
     end
   rescue => e
     # If configuration fails during initialization, log and continue without patching
     if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
-      Rails.logger.error "[TenantRls] Failed to enable auto Thread.new patching: #{e.message}"
-    else
       Rails.logger.error "[TenantRls] Failed to enable auto Thread.new patching: #{e.message}"
     end
   end

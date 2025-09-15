@@ -180,10 +180,10 @@ module TenantRls
         server_environment || long_running_operation
       end
 
-      # Create lightweight thread (IMPROVED: Better connection handling)
+      # Create lightweight thread (IMPROVED: Forced single connection)
       def create_lightweight_thread(context, *args, &block)
         new_without_tenant_context(*args) do
-          # IMPROVED: Use dedicated connection for better reliability
+          # CRITICAL: Use dedicated connection and FORCE all AR operations to use it
           ActiveRecord::Base.connection_pool.with_connection do |connection|
             begin
               # Restore tenant context in the new thread (thread-local variables)
@@ -191,19 +191,33 @@ module TenantRls
               TenantRls::Current.user = context[:user]
 
               if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
-                Rails.logger.debug { "[TenantRls] Lightweight thread: restored tenant_id=#{context[:tenant_id]} with dedicated connection" }
+                Rails.logger.debug { "[TenantRls] Thread: using dedicated connection for tenant_id=#{context[:tenant_id]}" }
               end
 
-              # CRITICAL: Set database session variable for RLS on the SAME connection
+              # CRITICAL: Set database session variable for RLS on the dedicated connection
               if context[:tenant_id] && !context[:tenant_id].to_s.strip.empty?
                 connection.execute("SET tenant_rls.tenant_id = #{connection.quote(context[:tenant_id])}")
 
                 if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
-                  Rails.logger.debug { "[TenantRls] Thread: SET tenant_rls.tenant_id=#{context[:tenant_id]} on dedicated connection" }
+                  Rails.logger.debug { "[TenantRls] Thread: SET tenant_rls.tenant_id=#{context[:tenant_id]} on connection #{connection.object_id}" }
                 end
               end
 
-              # Execute the original block with dedicated connection and tenant context
+              # CRITICAL: Force ActiveRecord to use our specific connection for ALL operations
+              # This prevents issues with connection.cache getting different connections
+              Thread.current[:tenant_rls_forced_connection] = connection
+
+              # Monkey patch ActiveRecord::Base.connection for this thread only
+              original_connection_method = ActiveRecord::Base.method(:connection)
+              ActiveRecord::Base.define_singleton_method(:connection) do
+                Thread.current[:tenant_rls_forced_connection] || original_connection_method.call
+              end
+
+              if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
+                Rails.logger.debug { "[TenantRls] Thread: Forced all ActiveRecord operations to use connection #{connection.object_id}" }
+              end
+
+              # Execute the original block - ALL database operations will use our connection
               yield if block_given?
 
             rescue => e
@@ -213,6 +227,19 @@ module TenantRls
               end
               raise
             ensure
+              # Clean up the forced connection
+              Thread.current[:tenant_rls_forced_connection] = nil
+
+              # Restore original connection method
+              begin
+                ActiveRecord::Base.define_singleton_method(:connection, original_connection_method) if original_connection_method
+              rescue => method_error
+                # Log but don't fail
+                if defined?(Rails) && Rails.logger
+                  Rails.logger.warn "[TenantRls] Failed to restore original connection method: #{method_error.message}"
+                end
+              end
+
               # Clean up thread-local variables
               TenantRls::Current.reset if defined?(TenantRls::Current)
 
@@ -220,7 +247,7 @@ module TenantRls
               begin
                 connection.execute('RESET tenant_rls.tenant_id') if connection
                 if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
-                  Rails.logger.debug { '[TenantRls] Thread cleanup: RESET tenant_rls.tenant_id on same connection' }
+                  Rails.logger.debug { "[TenantRls] Thread cleanup: RESET tenant_rls.tenant_id on connection #{connection.object_id}" }
                 end
               rescue => cleanup_error
                 # Log but don't raise - we're in cleanup
@@ -244,15 +271,23 @@ module TenantRls
               TenantRls::Current.user = context[:user]
 
               # CRITICAL: Set database session variable for RLS on the dedicated connection
-              # Use ApplicationRecord.with_tenant to properly set PostgreSQL session variable
-              ApplicationRecord.with_tenant(context[:tenant_id]) do
-                if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
-                  Rails.logger.debug { "[TenantRls] Puma thread: SET tenant_rls.tenant_id=#{context[:tenant_id]} on dedicated connection" }
-                end
+              if context[:tenant_id] && !context[:tenant_id].to_s.strip.empty?
+                connection.execute("SET tenant_rls.tenant_id = #{connection.quote(context[:tenant_id])}")
 
-                # Execute the original block with dedicated connection and tenant context
-                yield if block_given?
+                if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
+                  Rails.logger.debug { "[TenantRls] Puma thread: SET tenant_rls.tenant_id=#{context[:tenant_id]} on connection #{connection.object_id}" }
+                end
               end
+
+              # CRITICAL: Force ActiveRecord to use our specific connection for ALL operations
+              Thread.current[:tenant_rls_forced_connection] = connection
+              original_connection_method = ActiveRecord::Base.method(:connection)
+              ActiveRecord::Base.define_singleton_method(:connection) do
+                Thread.current[:tenant_rls_forced_connection] || original_connection_method.call
+              end
+
+              # Execute the original block with forced single connection
+              yield if block_given?
 
             rescue => e
               if defined?(Rails) && Rails.logger
@@ -261,15 +296,26 @@ module TenantRls
               end
               raise
             ensure
+              # Clean up the forced connection
+              Thread.current[:tenant_rls_forced_connection] = nil
+
+              # Restore original connection method
+              begin
+                ActiveRecord::Base.define_singleton_method(:connection, original_connection_method) if original_connection_method
+              rescue => method_error
+                if defined?(Rails) && Rails.logger
+                  Rails.logger.warn "[TenantRls] Failed to restore original connection method: #{method_error.message}"
+                end
+              end
+
               # Clean up thread-local variables
               TenantRls::Current.reset if defined?(TenantRls::Current)
 
-              # CRITICAL: Reset database session variable for safety
-              # Extra important for dedicated connections to prevent tenant bleeding
+              # CRITICAL: Reset database session variable on the same connection
               begin
                 connection.execute('RESET tenant_rls.tenant_id') if connection
                 if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
-                  Rails.logger.debug { '[TenantRls] Puma thread cleanup: RESET tenant_rls.tenant_id on dedicated connection' }
+                  Rails.logger.debug { "[TenantRls] Puma thread cleanup: RESET tenant_rls.tenant_id on connection #{connection.object_id}" }
                 end
               rescue => cleanup_error
                 # Log but don't raise - we're in cleanup

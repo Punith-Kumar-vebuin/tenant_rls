@@ -50,30 +50,13 @@ module TenantRls
             end
 
             # Create thread with automatic tenant context restoration
-            # LIGHTWEIGHT: No connection pooling - let Rails handle connections per operation
-            new_without_tenant_context(*args) do
-              begin
-                # Restore tenant context in the new thread
-                TenantRls::Current.tenant_id = context[:tenant_id]
-                TenantRls::Current.user = context[:user]
-
-                if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
-                  Rails.logger.debug { "[TenantRls] Auto-restored tenant_id=#{context[:tenant_id]} in Thread.new" }
-                end
-
-                # Execute the original block - Rails will handle DB connections automatically
-                yield if block_given?
-
-              rescue => e
-                if defined?(Rails) && Rails.logger
-                  Rails.logger.error "[TenantRls] Error in auto-tenant Thread.new: #{e.class}: #{e.message}"
-                  Rails.logger.error "[TenantRls] Backtrace: #{e.backtrace&.first(3)&.join('\n  ')}"
-                end
-                raise
-              ensure
-                # Clean up thread-local variables
-                TenantRls::Current.reset if defined?(TenantRls::Current)
-              end
+            # Handle both lightweight and Puma long-running thread scenarios
+            if should_use_connection_management?
+              # PUMA MODE: Dedicated connection for long-running threads
+              create_thread_with_connection_management(context, *args, &block)
+            else
+              # LIGHTWEIGHT MODE: Let Rails handle connections per operation
+              create_lightweight_thread(context, *args, &block)
             end
           else
             # No tenant context, use original Thread.new behavior
@@ -86,6 +69,87 @@ module TenantRls
             Rails.logger.error "[TenantRls] Thread.new patching failed, falling back to original: #{e.class}: #{e.message}"
           end
           new_without_tenant_context(*args, &block)
+        end
+      end
+
+      private
+
+      # Determine if we should use dedicated connection management
+      # True for Puma multi-threaded environments or when explicitly enabled
+      def should_use_connection_management?
+        return false unless TenantRls.configuration.puma_thread_connection_management
+        
+        # Detect if running in Puma (multi-threaded server)
+        defined?(Puma) || ENV['SERVER_SOFTWARE']&.include?('puma') || 
+        (defined?(Rails) && Rails.env.production? && Thread.current.name&.include?('puma'))
+      end
+
+      # Create lightweight thread (original behavior)
+      def create_lightweight_thread(context, *args, &block)
+        new_without_tenant_context(*args) do
+          begin
+            # Restore tenant context in the new thread
+            TenantRls::Current.tenant_id = context[:tenant_id]
+            TenantRls::Current.user = context[:user]
+
+            if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
+              Rails.logger.debug { "[TenantRls] Lightweight thread: restored tenant_id=#{context[:tenant_id]}" }
+            end
+
+            # Execute the original block - Rails will handle DB connections automatically
+            yield if block_given?
+
+          rescue => e
+            if defined?(Rails) && Rails.logger
+              Rails.logger.error "[TenantRls] Error in lightweight Thread.new: #{e.class}: #{e.message}"
+              Rails.logger.error "[TenantRls] Backtrace: #{e.backtrace&.first(3)&.join('\n  ')}"
+            end
+            raise
+          ensure
+            # Clean up thread-local variables
+            TenantRls::Current.reset if defined?(TenantRls::Current)
+          end
+        end
+      end
+
+      # Create thread with dedicated connection management for Puma/long-running tasks
+      def create_thread_with_connection_management(context, *args, &block)
+        new_without_tenant_context(*args) do
+          # Check out a dedicated connection from the pool for this thread
+          ActiveRecord::Base.connection_pool.with_connection do |connection|
+            begin
+              # Restore tenant context in the new thread
+              TenantRls::Current.tenant_id = context[:tenant_id]
+              TenantRls::Current.user = context[:user]
+
+              # Set tenant context on the database connection (for RLS)
+              if context[:tenant_id] && !context[:tenant_id].to_s.strip.empty?
+                tenant_column = TenantRls.configuration.tenant_id_column.to_s
+                connection.execute("SET session.#{tenant_column} = #{connection.quote(context[:tenant_id])}")
+                
+                if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
+                  Rails.logger.debug { "[TenantRls] Puma thread: set #{tenant_column}=#{context[:tenant_id]} on dedicated connection" }
+                end
+              end
+
+              if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
+                Rails.logger.debug { "[TenantRls] Puma thread: using dedicated connection for tenant_id=#{context[:tenant_id]}" }
+              end
+
+              # Execute the original block with the dedicated connection
+              yield if block_given?
+
+            rescue => e
+              if defined?(Rails) && Rails.logger
+                Rails.logger.error "[TenantRls] Error in Puma Thread.new: #{e.class}: #{e.message}"
+                Rails.logger.error "[TenantRls] Backtrace: #{e.backtrace&.first(3)&.join('\n  ')}"
+              end
+              raise
+            ensure
+              # Clean up thread-local variables
+              TenantRls::Current.reset if defined?(TenantRls::Current)
+            end
+          end
         end
       end
     end

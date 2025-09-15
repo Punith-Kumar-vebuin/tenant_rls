@@ -54,6 +54,7 @@ TenantRls.configure do |config|
   config.tenant_id_column = :company_id           # Tenant ID column name
   config.debug_logging = Rails.env.development?   # Debug logging
   config.auto_thread_tenant_context = true        # Automatic thread context
+  config.puma_thread_connection_management = true  # Puma connection management (default: true)
 end
 ```
 
@@ -142,6 +143,22 @@ def background_processing
     SomeModel.create(name: "example") # Uses proper tenant isolation
     Rails.logger.info "Processing for tenant #{TenantRls::Current.tenant_id}"
   end
+end
+```
+
+### Puma Multi-threaded Support
+
+The gem automatically detects Puma environments and uses dedicated database connection management for long-running threads. This solves the common issue where export operations fail in Puma production environments.
+
+```ruby
+# Automatic - works in both single-threaded and Puma environments
+Thread.new do
+  generate_csv_export  # Tenant context and DB connections handled automatically
+end
+
+# Explicit - for guaranteed long-running thread support
+TenantRls.long_running_thread do
+  large_export_operation  # Dedicated connection + tenant context
 end
 ```
 

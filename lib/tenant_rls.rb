@@ -37,6 +37,15 @@ module TenantRls
     ThreadContextManager.with_tenant_context_and_connection(&block)
   end
 
+  # Create a long-running thread with dedicated connection management (for Puma/export tasks)
+  # This explicitly uses connection pooling and is ideal for tasks that outlive request cycles
+  # @yield Block to execute in thread with dedicated database connection and tenant context
+  # @return [Thread] The created thread with dedicated connection and tenant context
+  def self.long_running_thread(&block)
+    context = ThreadContextManager.capture_current_context
+    Thread.send(:create_thread_with_connection_management, context, &block)
+  end
+
   def self.capture_context
     ThreadContextManager.capture_current_context
   end

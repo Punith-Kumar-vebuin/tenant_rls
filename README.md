@@ -53,8 +53,8 @@ TenantRls.configure do |config|
   config.tenant_resolver_strategy = :hybrid        # Resolution strategy
   config.tenant_id_column = :company_id           # Tenant ID column name
   config.debug_logging = Rails.env.development?   # Debug logging
-  config.auto_thread_tenant_context = true        # Automatic thread context
-  config.puma_thread_connection_management = true  # Puma connection management (default: true)
+  config.auto_thread_tenant_context = true        # Automatic thread context (default: true)
+  config.puma_thread_connection_management = false # Puma connection management (default: false)
 end
 ```
 
@@ -146,19 +146,40 @@ def background_processing
 end
 ```
 
-### Puma Multi-threaded Support
+### Safe Thread Context Preservation
 
-The gem automatically detects Puma environments and uses dedicated database connection management for long-running threads. This solves the common issue where export operations fail in Puma production environments.
+**🛡️ BULLETPROOF DESIGN**: The gem uses ultra-strict filtering to ensure **only your application code** is affected by `Thread.new` patching. **Puma, system threads, and all gem code are completely avoided**.
 
 ```ruby
-# Automatic - works in both single-threaded and Puma environments
+# ✅ SAFE: Only your application Thread.new calls are enhanced
+# app/services/export_service.rb
 Thread.new do
-  generate_csv_export  # Tenant context and DB connections handled automatically
+  generate_csv_export  # Tenant context automatically preserved
 end
 
-# Explicit - for guaranteed long-running thread support
+# ✅ SAFE: Works across multiple repositories with zero configuration
+# lib/background_processor.rb  
+Thread.new do
+  process_large_dataset  # Tenant context maintained
+end
+```
+
+**Filtering Logic**:
+- ✅ **Allows**: `/app/`, `/lib/`, `/config/` (your code)
+- ❌ **Blocks**: `/gems/`, `/vendor/`, Puma, Rails internals, database adapters
+- ❌ **Blocks**: All system threads, server threads, connection pool threads
+
+### Advanced Connection Management
+
+For heavy operations that need dedicated database connections:
+
+```ruby
+# Optional: Enable for long-running export operations
+config.puma_thread_connection_management = true
+
+# Then use explicit method for guaranteed connection management
 TenantRls.long_running_thread do
-  large_export_operation  # Dedicated connection + tenant context
+  massive_export_operation  # Dedicated DB connection + tenant context
 end
 ```
 

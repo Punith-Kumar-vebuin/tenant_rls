@@ -8,8 +8,8 @@ module TenantRls
       @tenant_resolver_strategy = :warden
       @tenant_id_column = :company_id
       @debug_logging = false
-      @auto_thread_tenant_context = true
-      @puma_thread_connection_management = false  # SAFER DEFAULT: disabled
+      @auto_thread_tenant_context = true          # TRUE: Easy use across repos
+      @puma_thread_connection_management = false  # Conservative for safety
       @emergency_disable_thread_patching = false
     end
 

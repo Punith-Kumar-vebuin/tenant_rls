@@ -31,7 +31,7 @@ module TenantRls
           if TenantRls.configuration.emergency_disable_thread_patching
             return new_without_tenant_context(*args, &block)
           end
-          
+
           # CRITICAL: Be very selective about when to apply tenant patching
           # Only apply to user application code, not system/gem threads
           unless should_apply_tenant_patching?
@@ -73,61 +73,96 @@ module TenantRls
 
       private
 
-      # CRITICAL: Determine if we should apply tenant patching at all
-      # Only apply to user application code, not system threads
+      # BULLETPROOF: Only apply tenant patching to YOUR application code
+      # Completely avoids Puma, system threads, and all gem code
       def should_apply_tenant_patching?
-        # Skip if we don't have caller information
         return false unless respond_to?(:caller_locations, true)
-        
-        caller_locs = caller_locations(1, 10) # Look deeper into call stack
-        return false unless caller_locs && !caller_locs.empty?
-        
-        # SKIP for all system/gem/internal calls
+
+        caller_locs = caller_locations(1, 15) # Look deeper to catch all system calls
+        return false unless caller_locs.present? && !caller_locs.empty?
+
+        # ULTRA-STRICT filtering - if ANY caller is system/gem code, skip entirely
         caller_locs.each do |loc|
           path = loc.path.to_s
-          
-          # Skip Ruby standard library
-          return false if path.include?('/ruby/') && !path.include?('/gems/')
-          
-          # Skip all gems (including Rails internals, database adapters, etc.)
+
+          # Skip Ruby standard library completely
+          return false if path.include?('/ruby/')
+
+          # Skip ALL gems and vendor code (Rails, Puma, etc.)
           return false if path.include?('/gems/')
-          
-          # Skip Rails internals
+          return false if path.include?('/vendor/')
+          return false if path.include?('.bundle/')
+
+          # Skip Rails framework directories
           return false if path.include?('/railties/')
           return false if path.include?('/activerecord/')
           return false if path.include?('/activesupport/')
           return false if path.include?('/actionpack/')
-          
-          # Skip database adapters and connection pools
+          return false if path.include?('/actionview/')
+          return false if path.include?('/activejob/')
+          return false if path.include?('/actioncable/')
+          return false if path.include?('/actionmailer/')
+
+          # Skip ALL web servers (Puma is critical here)
+          return false if path.include?('/puma/')
+          return false if path.include?('/unicorn/')
+          return false if path.include?('/thin/')
+          return false if path.include?('/passenger/')
+          return false if path.include?('/webrick/')
+
+          # Skip ALL database adapters and MongoDB
           return false if path.include?('/pg-')
           return false if path.include?('/mysql')
           return false if path.include?('/sqlite')
           return false if path.include?('/mongo')
-          
-          # Skip web servers
-          return false if path.include?('/puma/')
-          return false if path.include?('/unicorn/')
-          return false if path.include?('/thin/')
-          
-          # Skip background job processors  
+          return false if path.include?('/redis/')
+
+          # Skip ALL background job processors
           return false if path.include?('/sidekiq/')
           return false if path.include?('/resque/')
+          return false if path.include?('/delayed_job/')
+          return false if path.include?('/good_job/')
+
+          # Skip system and boot files
+          return false if path.include?('/bootsnap/')
+          return false if path.include?('/spring/')
+          return false if path.include?('/zeitwerk/')
+
+          # Skip any path that looks like a gem (contains version numbers)
+          return false if path.match?(/\/\w+-[\d.]+\//)
         end
-        
-        # Only ALLOW for application code (app/, lib/, config/)
-        return caller_locs.any? { |loc| 
+
+        # WHITELIST APPROACH: Only allow YOUR application directories
+        # This ensures only your custom Thread.new calls are affected
+        app_paths = caller_locs.any? do |loc|
           path = loc.path.to_s
-          path.include?('/app/') || path.include?('/lib/') || path.include?('/config/')
-        }
+          # Must be in your application directories
+          path.include?('/app/') ||
+          path.include?('/lib/') ||
+          (path.include?('/config/') && !path.include?('boot.rb'))
+        end
+
+        # Additional safety: ensure we're not in any server/system context
+        if app_paths
+          # Double-check thread name doesn't suggest system thread
+          thread_name = Thread.current.name.to_s.downcase
+          return false if thread_name.include?('puma')
+          return false if thread_name.include?('server')
+          return false if thread_name.include?('pool')
+          return false if thread_name.include?('worker')
+          return false if thread_name.include?('job')
+        end
+
+        app_paths
       end
 
       # Determine if we should use dedicated connection management
       # True for Puma multi-threaded environments or when explicitly enabled
       def should_use_connection_management?
         return false unless TenantRls.configuration.puma_thread_connection_management
-        
+
         # Detect if running in Puma (multi-threaded server)
-        defined?(Puma) || ENV['SERVER_SOFTWARE']&.include?('puma') || 
+        defined?(Puma) || ENV['SERVER_SOFTWARE']&.include?('puma') ||
         (defined?(Rails) && Rails.env.production? && Thread.current.name&.include?('puma'))
       end
 
@@ -173,7 +208,7 @@ module TenantRls
               if context[:tenant_id] && !context[:tenant_id].to_s.strip.empty?
                 tenant_column = TenantRls.configuration.tenant_id_column.to_s
                 connection.execute("SET session.#{tenant_column} = #{connection.quote(context[:tenant_id])}")
-                
+
                 if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
                   Rails.logger.debug { "[TenantRls] Puma thread: set #{tenant_column}=#{context[:tenant_id]} on dedicated connection" }
                 end
@@ -229,7 +264,7 @@ class Thread
   # Enable automatic tenant context preservation for Thread.new (if configured)
   # This makes Thread.new automatically inherit tenant context - NO CODE CHANGES NEEDED!
   begin
-    if TenantRls.configuration.auto_thread_tenant_context && 
+    if TenantRls.configuration.auto_thread_tenant_context &&
        !TenantRls.configuration.emergency_disable_thread_patching
       class << self
         alias_method :new_without_tenant_context, :new

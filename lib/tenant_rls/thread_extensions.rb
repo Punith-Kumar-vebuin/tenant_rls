@@ -170,7 +170,7 @@ module TenantRls
       def create_lightweight_thread(context, *args, &block)
         new_without_tenant_context(*args) do
           begin
-            # Restore tenant context in the new thread
+            # Restore tenant context in the new thread (thread-local variables)
             TenantRls::Current.tenant_id = context[:tenant_id]
             TenantRls::Current.user = context[:user]
 
@@ -178,8 +178,16 @@ module TenantRls
               Rails.logger.debug { "[TenantRls] Lightweight thread: restored tenant_id=#{context[:tenant_id]}" }
             end
 
-            # Execute the original block - Rails will handle DB connections automatically
-            yield if block_given?
+            # CRITICAL: Set database session variable for RLS (required for object updates)
+            # Use ApplicationRecord.with_tenant to set PostgreSQL session variable
+            ApplicationRecord.with_tenant(context[:tenant_id]) do
+              if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
+                Rails.logger.debug { "[TenantRls] Thread: SET tenant_rls.tenant_id=#{context[:tenant_id]} on database connection" }
+              end
+
+              # Execute the original block with proper database tenant context
+              yield if block_given?
+            end
 
           rescue => e
             if defined?(Rails) && Rails.logger
@@ -190,6 +198,20 @@ module TenantRls
           ensure
             # Clean up thread-local variables
             TenantRls::Current.reset if defined?(TenantRls::Current)
+
+            # CRITICAL: Reset database session variable for safety
+            # This ensures no tenant bleeding if connection is returned to pool
+            begin
+              ApplicationRecord.connection.execute('RESET tenant_rls.tenant_id') if defined?(ApplicationRecord)
+              if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
+                Rails.logger.debug { '[TenantRls] Thread cleanup: RESET tenant_rls.tenant_id on database connection' }
+              end
+            rescue => cleanup_error
+              # Log but don't raise - we're in cleanup
+              if defined?(Rails) && Rails.logger
+                Rails.logger.warn "[TenantRls] Failed to reset database session in thread cleanup: #{cleanup_error.message}"
+              end
+            end
           end
         end
       end
@@ -200,26 +222,20 @@ module TenantRls
           # Check out a dedicated connection from the pool for this thread
           ActiveRecord::Base.connection_pool.with_connection do |connection|
             begin
-              # Restore tenant context in the new thread
+              # Restore tenant context in the new thread (thread-local variables)
               TenantRls::Current.tenant_id = context[:tenant_id]
               TenantRls::Current.user = context[:user]
 
-              # Set tenant context on the database connection (for RLS)
-              if context[:tenant_id] && !context[:tenant_id].to_s.strip.empty?
-                tenant_column = TenantRls.configuration.tenant_id_column.to_s
-                connection.execute("SET session.#{tenant_column} = #{connection.quote(context[:tenant_id])}")
-
+              # CRITICAL: Set database session variable for RLS on the dedicated connection
+              # Use ApplicationRecord.with_tenant to properly set PostgreSQL session variable
+              ApplicationRecord.with_tenant(context[:tenant_id]) do
                 if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
-                  Rails.logger.debug { "[TenantRls] Puma thread: set #{tenant_column}=#{context[:tenant_id]} on dedicated connection" }
+                  Rails.logger.debug { "[TenantRls] Puma thread: SET tenant_rls.tenant_id=#{context[:tenant_id]} on dedicated connection" }
                 end
-              end
 
-              if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
-                Rails.logger.debug { "[TenantRls] Puma thread: using dedicated connection for tenant_id=#{context[:tenant_id]}" }
+                # Execute the original block with dedicated connection and tenant context
+                yield if block_given?
               end
-
-              # Execute the original block with the dedicated connection
-              yield if block_given?
 
             rescue => e
               if defined?(Rails) && Rails.logger
@@ -230,6 +246,20 @@ module TenantRls
             ensure
               # Clean up thread-local variables
               TenantRls::Current.reset if defined?(TenantRls::Current)
+
+              # CRITICAL: Reset database session variable for safety
+              # Extra important for dedicated connections to prevent tenant bleeding
+              begin
+                connection.execute('RESET tenant_rls.tenant_id') if connection
+                if TenantRls.is_debugging? && defined?(Rails) && Rails.logger
+                  Rails.logger.debug { '[TenantRls] Puma thread cleanup: RESET tenant_rls.tenant_id on dedicated connection' }
+                end
+              rescue => cleanup_error
+                # Log but don't raise - we're in cleanup
+                if defined?(Rails) && Rails.logger
+                  Rails.logger.warn "[TenantRls] Failed to reset database session in Puma thread cleanup: #{cleanup_error.message}"
+                end
+              end
             end
           end
         end

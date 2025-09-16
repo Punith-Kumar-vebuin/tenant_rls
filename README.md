@@ -1,15 +1,16 @@
 # TenantRls
 
-A Ruby gem for implementing PostgreSQL Row-Level Security (RLS) in multi-tenant Rails applications with automatic thread-safe tenant context preservation.
+A Ruby gem for implementing PostgreSQL Row-Level Security (RLS) in multi-tenant Rails applications with simple, explicit tenant-aware threading.
 
 ## Features
 
-- **Automatic Thread Context Preservation**: Thread.new automatically inherits tenant context without code changes
+- **TenantThread**: Simple Thread subclass that preserves tenant context explicitly
 - **PostgreSQL RLS Integration**: Direct integration with PostgreSQL Row-Level Security policies
 - **Multiple Resolution Strategies**: Support for Warden, custom authentication, background jobs, and manual tenant resolution
 - **Thread-Safe Design**: Uses Concurrent::ThreadLocalVar for thread-safe tenant isolation
 - **Background Job Support**: Automatic tenant context in Sidekiq and ActiveJob workers
 - **Rails Integration**: Seamless integration with Rails controllers and models
+- **AWS RDS Compatible**: Works with AWS RDS PostgreSQL instances
 
 ## Installation
 
@@ -53,8 +54,6 @@ TenantRls.configure do |config|
   config.tenant_resolver_strategy = :hybrid        # Resolution strategy
   config.tenant_id_column = :company_id           # Tenant ID column name
   config.debug_logging = Rails.env.development?   # Debug logging
-  config.auto_thread_tenant_context = true        # Automatic thread context (default: true)
-  config.puma_thread_connection_management = false # Puma connection management (default: false)
 end
 ```
 
@@ -129,57 +128,78 @@ config.tenant_resolver_strategy = :manual
 
 Requires explicit tenant setting via `TenantRls::Current.tenant_id = value`.
 
-## Thread Context Preservation
+## TenantThread - Tenant-Aware Threading
 
-The gem automatically preserves tenant context when creating new threads:
+The gem provides `TenantThread` - a simple Thread subclass that explicitly preserves tenant context:
+
+### Basic Usage
 
 ```ruby
-# Tenant context is automatically preserved in threads
-def background_processing
-  TenantRls::Current.tenant_id = 12345
+# Simple tenant-aware thread
+TenantRls::TenantThread.new do
+  # tenant_id is automatically available here
+  puts "Processing for tenant #{TenantRls::Current.tenant_id}"
+  SomeModel.create(name: "example") # Uses proper tenant isolation
+end
+```
 
-  Thread.new do
-    # tenant_id is automatically available here
-    SomeModel.create(name: "example") # Uses proper tenant isolation
-    Rails.logger.info "Processing for tenant #{TenantRls::Current.tenant_id}"
+### With Database Connection Management
+
+For long-running operations or AWS RDS environments, use `with_connection`:
+
+```ruby
+# Thread with dedicated database connection (recommended for server environments)
+TenantRls::TenantThread.with_connection do
+  # Guaranteed database connection with tenant context
+  export_obj.update(status: 'ready')
+  process_heavy_operation(export_obj)
+end
+```
+
+### Real-World Example
+
+```ruby
+# In your service class
+class ExportHistoryService
+  def call
+    # ... setup code ...
+
+    # Background processing with tenant context
+    TenantRls::TenantThread.with_connection do
+      Rails.logger.info "Processing export for tenant #{TenantRls::Current.tenant_id}"
+      export_obj.update(status: 'ready')
+      process_export(export_obj)
+      notify_completion(export_obj)
+    end
   end
 end
 ```
 
-### Safe Thread Context Preservation
+### Why TenantThread?
 
-**🛡️ BULLETPROOF DESIGN**: The gem uses ultra-strict filtering to ensure **only your application code** is affected by `Thread.new` patching. **Puma, system threads, and all gem code are completely avoided**.
+- **Explicit**: No monkey patching - you control when tenant context is preserved
+- **Safe**: No interference with system threads, Puma, or other gems
+- **AWS RDS Compatible**: Handles database session variables correctly
+- **Simple**: Just replace `Thread.new` with `TenantRls::TenantThread.new`
 
-```ruby
-# ✅ SAFE: Only your application Thread.new calls are enhanced
-# app/services/export_service.rb
-Thread.new do
-  generate_csv_export  # Tenant context automatically preserved
-end
+## Migration from Thread.new
 
-# ✅ SAFE: Works across multiple repositories with zero configuration
-# lib/background_processor.rb  
-Thread.new do
-  process_large_dataset  # Tenant context maintained
-end
-```
-
-**Filtering Logic**:
-- ✅ **Allows**: `/app/`, `/lib/`, `/config/` (your code)
-- ❌ **Blocks**: `/gems/`, `/vendor/`, Puma, Rails internals, database adapters
-- ❌ **Blocks**: All system threads, server threads, connection pool threads
-
-### Advanced Connection Management
-
-For heavy operations that need dedicated database connections:
+Replace your existing `Thread.new` calls:
 
 ```ruby
-# Optional: Enable for long-running export operations
-config.puma_thread_connection_management = true
+# Before: Regular Thread.new (loses tenant context)
+Thread.new do
+  SomeModel.create(name: "example")
+end
 
-# Then use explicit method for guaranteed connection management
-TenantRls.long_running_thread do
-  massive_export_operation  # Dedicated DB connection + tenant context
+# After: TenantThread (preserves tenant context)
+TenantRls::TenantThread.new do
+  SomeModel.create(name: "example")
+end
+
+# For database-heavy operations (recommended for servers)
+TenantRls::TenantThread.with_connection do
+  export_obj.update(status: 'ready')
 end
 ```
 
@@ -264,29 +284,18 @@ config.tenant_id_column = :account_id  # Default: :company_id
 config.debug_logging = true
 ```
 
-### Automatic Thread Context
-
-```ruby
-# Control automatic thread context preservation
-config.auto_thread_tenant_context = true  # Default: true
-```
 
 ## Advanced Usage
 
-### Thread Context Management
+### Manual Context Management
 
 ```ruby
-# Capture current context
+# Capture current context (for advanced use cases)
 context = TenantRls.capture_context
 
-# Restore context in different thread
+# Restore context in different scope
 TenantRls.restore_context(context) do
   # Code runs with restored tenant context
-end
-
-# Create thread with explicit context management
-TenantRls.thread_with_context do
-  # Thread-safe tenant operations
 end
 ```
 
@@ -325,7 +334,7 @@ puts "Current user: #{TenantRls::Current.user&.inspect}"
 
 # Test thread context preservation
 TenantRls::Current.tenant_id = 123
-Thread.new { puts TenantRls::Current.tenant_id }.join # Should output: 123
+TenantRls::TenantThread.new { puts TenantRls::Current.tenant_id }.join # Should output: 123
 ```
 
 ### Verify RLS Configuration
@@ -403,6 +412,15 @@ end
 The gem is available as open source under the [MIT License](https://opensource.org/licenses/MIT).
 
 ## Changelog
+
+### Version 0.2.0 (Current)
+
+- **BREAKING**: Removed Thread.new monkey patching for better stability
+- **NEW**: Introduced `TenantRls::TenantThread` for explicit tenant-aware threading
+- **NEW**: Added `TenantThread.with_connection` for AWS RDS compatibility
+- Simplified configuration (removed thread-related options)
+- Improved reliability in server environments
+- Better PostgreSQL RLS session variable handling
 
 ### Version 0.1.0
 

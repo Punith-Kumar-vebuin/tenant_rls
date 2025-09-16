@@ -1,7 +1,6 @@
 # Thread Context Manager for TenantRls
-# This module provides thread-safe utilities for preserving tenant context
-# across thread boundaries, ensuring RLS continues to work properly in
-# background threads spawned with Thread.new
+# Simplified version - provides utilities for capturing and restoring tenant context
+# Used internally by the gem and available for advanced use cases
 
 module TenantRls
   module ThreadContextManager
@@ -25,68 +24,6 @@ module TenantRls
       }
     end
 
-    # Executes a block within a new thread, preserving the current tenant context
-    # This is a thread-safe replacement for Thread.new that maintains tenant context
-    #
-    # Usage:
-    #   TenantRls::ThreadContextManager.with_tenant_context do
-    #     # Your background work here
-    #     # tenant_id and user context are preserved
-    #   end
-    #
-    # Returns: Thread object
-    def with_tenant_context(&block)
-      context = capture_current_context
-
-      if TenantRls.is_debugging?
-        Rails.logger.debug { "[TenantRls] Creating thread with tenant context: tenant_id=#{context[:tenant_id].inspect}" }
-      end
-
-      Thread.new do
-        begin
-          restore_context_in_thread(context, &block)
-        ensure
-          if TenantRls.is_debugging?
-            Rails.logger.debug { "[TenantRls] Cleaning up thread context: tenant_id=#{context[:tenant_id].inspect}" }
-          end
-          TenantRls::Current.reset
-        end
-      end
-    end
-
-    # Executes a block within a new thread with database connection management
-    # This combines tenant context preservation with ActiveRecord connection pooling
-    #
-    # Usage:
-    #   TenantRls::ThreadContextManager.with_tenant_context_and_connection do
-    #     # Your database work here with tenant context preserved
-    #   end
-    #
-    # Returns: Thread object
-    def with_tenant_context_and_connection(&block)
-      context = capture_current_context
-
-      if TenantRls.is_debugging?
-        Rails.logger.debug { "[TenantRls] Creating thread with DB connection: tenant_id=#{context[:tenant_id].inspect}" }
-      end
-
-      Thread.new do
-        ActiveRecord::Base.connection_pool.with_connection do
-          begin
-            if TenantRls.is_debugging?
-              Rails.logger.debug { "[TenantRls] Acquired DB connection in thread for tenant_id=#{context[:tenant_id].inspect}" }
-            end
-            restore_context_in_thread(context, &block)
-          ensure
-            if TenantRls.is_debugging?
-              Rails.logger.debug { "[TenantRls] Cleaning up thread context and DB connection: tenant_id=#{context[:tenant_id].inspect}" }
-            end
-            TenantRls::Current.reset
-          end
-        end
-      end
-    end
-
     # Manually restores tenant context in the current thread from captured context
     # Useful for custom thread management scenarios
     #
@@ -102,6 +39,7 @@ module TenantRls
         if TenantRls.is_debugging?
           Rails.logger.warn '[TenantRls] No tenant_id to restore in thread context'
         end
+        return yield if block_given?
         return
       end
 
@@ -130,41 +68,6 @@ module TenantRls
       end
     end
 
-    # Creates a context-aware thread that automatically preserves tenant state
-    # This method provides maximum flexibility for custom threading scenarios
-    #
-    # @param context [Hash, nil] Optional pre-captured context. If nil, captures current context
-    # @param with_connection [Boolean] Whether to use connection pool management
-    # @yield Block to execute in the new thread
-    # @return [Thread] The created thread
-    def create_context_aware_thread(context: nil, with_connection: true, &block)
-      context ||= capture_current_context
-
-      if TenantRls.is_debugging?
-        connection_type = with_connection ? 'with DB connection' : 'without DB connection'
-        Rails.logger.debug { "[TenantRls] Creating custom thread #{connection_type}: tenant_id=#{context[:tenant_id].inspect}" }
-      end
-
-      Thread.new do
-        thread_block = -> do
-          begin
-            restore_context_in_thread(context, &block)
-          ensure
-            if TenantRls.is_debugging?
-              Rails.logger.debug { "[TenantRls] Cleaning up custom thread context: tenant_id=#{context[:tenant_id].inspect}" }
-            end
-            TenantRls::Current.reset
-          end
-        end
-
-        if with_connection
-          ActiveRecord::Base.connection_pool.with_connection(&thread_block)
-        else
-          thread_block.call
-        end
-      end
-    end
-
     # Checks if current thread has tenant context
     # Useful for debugging and conditional logic
     def has_tenant_context?
@@ -180,24 +83,5 @@ module TenantRls
         strategy: TenantRls.configuration.tenant_resolver_strategy
       }
     end
-
-    private
-      # Internal method that handles the actual context restoration with proper RLS setup
-      def restore_context_in_thread(context)
-        tenant_id = context[:tenant_id]
-        user = context[:user]
-
-        return if tenant_id.blank?
-
-        if TenantRls.is_debugging?
-          Rails.logger.debug { "[TenantRls::ThreadContext] Setting up tenant context in thread #{Thread.current.object_id}" }
-        end
-
-        # Set thread-local context
-        TenantRls::Current.tenant_id = tenant_id
-        TenantRls::Current.user = user
-
-        # The database tenant context is set by the with_tenant block in the calling method
-      end
   end
 end

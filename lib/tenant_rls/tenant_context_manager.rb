@@ -20,13 +20,23 @@ module TenantRls
         TenantRls::Current.user = user
         TenantRls::Current.tenant_id = tenant_id
 
-        ApplicationRecord.with_tenant(tenant_id) do
-          Rails.logger.info { "[TenantRls] ▶ SET tenant_rls.tenant_id=#{tenant_id.inspect} for #{context_type}" }
-          verify_rls_execution(tenant_id) if TenantRls.is_debugging?
-          yield
-        end
+        # Thread-safe: Set session variable on current thread's connection
+        # Rails ensures the same connection is used throughout the request in the same thread
+        current_connection = ApplicationRecord.connection
+        current_connection.execute("SET tenant_rls.tenant_id = #{current_connection.quote(tenant_id)}")
+        Rails.logger.info { "[TenantRls] ▶ SET tenant_rls.tenant_id=#{tenant_id.inspect} for #{context_type} (thread-#{Thread.current.object_id})" }
+        verify_rls_execution(tenant_id) if TenantRls.is_debugging?
+
+        yield
       ensure
         Rails.logger.info { "[TenantRls] ◀ RESET tenant_rls.tenant_id=#{tenant_id.inspect} for #{context_type}" }
+        # Reset the session variable on the same connection used during the request
+        begin
+          current_connection = ApplicationRecord.connection
+          current_connection.execute('RESET tenant_rls.tenant_id') if tenant_id.present?
+        rescue => e
+          Rails.logger.error "[TenantRls] Failed to reset tenant_rls.tenant_id: #{e.message}"
+        end
         TenantRls::Current.reset
       end
 

@@ -24,6 +24,19 @@ module TenantRls
         tenant_id_var.value = nil
       end
 
+      # Minimal addition: Request context management for helper support
+      def in_request_context?
+        request_context_var.value == true
+      end
+
+      def set_request_context!
+        request_context_var.value = true
+      end
+
+      def clear_request_context!
+        request_context_var.value = nil
+      end
+
       private
         def user_var
           @user_var ||= Concurrent::ThreadLocalVar.new
@@ -31,6 +44,10 @@ module TenantRls
 
         def tenant_id_var
           @tenant_id_var ||= Concurrent::ThreadLocalVar.new
+        end
+
+        def request_context_var
+          @request_context_var ||= Concurrent::ThreadLocalVar.new
         end
     end
   end

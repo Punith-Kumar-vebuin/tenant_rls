@@ -15,9 +15,23 @@ module TenantRls
     old_tenant_id = Current.tenant_id
     Current.tenant_id = tenant_id
 
-    ApplicationRecord.with_tenant(tenant_id, &block)
+    # Minimal enhancement: Smart cleanup based on request context
+    if Current.respond_to?(:in_request_context?) && Current.in_request_context?
+      # During request context: Don't reset immediately (for helpers/modules)
+      ApplicationRecord.with_tenant(tenant_id, &block)
+    else
+      # Original behavior: Immediate reset for non-request contexts (jobs, manual calls)
+      begin
+        ApplicationRecord.with_tenant(tenant_id, &block)
+      ensure
+        Current.tenant_id = old_tenant_id
+      end
+    end
   ensure
-    Current.tenant_id = old_tenant_id
+    # Always reset thread-local tenant_id unless we're in a request context
+    unless Current.respond_to?(:in_request_context?) && Current.in_request_context?
+      Current.tenant_id = old_tenant_id
+    end
   end
 
   def self.current_tenant_id
@@ -25,7 +39,7 @@ module TenantRls
     tenant_id = Current.tenant_id
     return tenant_id if tenant_id.present?
 
-    # Fallback: database session variable (for helpers/modules)
+    # Minimal enhancement: Fallback to database session variable (for helpers/modules)
     begin
       ApplicationRecord.current_tenant_id
     rescue => e

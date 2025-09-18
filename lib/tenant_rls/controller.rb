@@ -9,6 +9,9 @@ module TenantRls
 
     private
       def set_tenant_context(&block)
+        # Minimal addition: Mark that we're in a request context for helpers/modules
+        TenantRls::Current.set_request_context!
+
         context_data = {
           type: :controller,
           request: request,
@@ -28,6 +31,9 @@ module TenantRls
         end
 
         execute_with_tenant_context(context_data, &block)
+      ensure
+        # Minimal addition: Clear request context at end of request
+        TenantRls::Current.clear_request_context!
       end
   end
 end

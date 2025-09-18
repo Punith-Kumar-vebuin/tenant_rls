@@ -27,6 +27,16 @@ module TenantRls
         end
       ensure
         Rails.logger.info { "[TenantRls] ◀ RESET tenant_rls.tenant_id=#{tenant_id.inspect} for #{context_type}" }
+
+        # Minimal enhancement: Ensure database session cleanup for request contexts
+        if TenantRls::Current.respond_to?(:in_request_context?) && TenantRls::Current.in_request_context? && tenant_id.present?
+          begin
+            ApplicationRecord.connection.execute('RESET tenant_rls.tenant_id')
+          rescue => e
+            Rails.logger.error "[TenantRls] Failed to reset tenant_rls.tenant_id: #{e.message}"
+          end
+        end
+
         TenantRls::Current.reset
       end
 

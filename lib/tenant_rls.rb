@@ -21,7 +21,17 @@ module TenantRls
   end
 
   def self.current_tenant_id
-    Current.tenant_id
+    # Primary: thread-local variable (fastest)
+    tenant_id = Current.tenant_id
+    return tenant_id if tenant_id.present?
+
+    # Fallback: database session variable (for helpers/modules)
+    begin
+      ApplicationRecord.current_tenant_id
+    rescue => e
+      Rails.logger.debug { "[TenantRls] Failed to get current_tenant_id from DB: #{e.message}" } if defined?(Rails)
+      nil
+    end
   end
 
   def self.reset!

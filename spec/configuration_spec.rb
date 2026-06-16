@@ -26,7 +26,7 @@ RSpec.describe TenantRls::Configuration do
 
   describe '#valid_strategies' do
     it 'returns all valid strategies' do
-      expected_strategies = [:warden, :custom_auth, :job_context, :manual]
+      expected_strategies = [:warden, :custom_auth, :job_context, :manual, :hybrid]
       expect(config.valid_strategies).to eq(expected_strategies)
     end
   end

@@ -20,7 +20,7 @@ module TenantRls
         tenant_id: tenant_id,
         user: user,
         strategy: TenantRls.configuration.tenant_resolver_strategy,
-        captured_at: Time.zone.now
+        captured_at: Time.now
       }
     end
 

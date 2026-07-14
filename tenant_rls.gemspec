@@ -27,6 +27,12 @@ Gem::Specification.new do |spec|
   spec.executables   = spec.files.grep(%r{^exe/}) {|f| File.basename(f) }
   spec.require_paths = ['lib']
 
+  # Documents the lowest Ruby the gem supports. Kept at 2.3 so existing
+  # production services still running Ruby 2.3.x can install the gem.
+  # NOTE: this does not pin transitive security patches (nokogiri, net-imap,
+  # rack-session, rails); those are resolved by each host app's own bundle.
+  spec.required_ruby_version = '>= 2.3.0'
+
   spec.add_development_dependency 'bundler', '>= 1.17'
   spec.add_development_dependency 'rake', '>= 10.0'
   spec.add_development_dependency 'rspec', '~> 3.0'

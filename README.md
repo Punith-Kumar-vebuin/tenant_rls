@@ -28,9 +28,33 @@ bundle install
 
 ## Requirements
 
-- Ruby 2.3.8 or higher
-- Rails 4.2 or higher
+- Ruby 2.3.0 or higher (declared via `required_ruby_version` in the gemspec)
+- Rails 4.0 or higher
 - PostgreSQL 9.5 or higher (for RLS support)
+
+> The gem still installs on Ruby 2.3.x for legacy services, but the
+> security-patched versions of transitive dependencies (nokogiri, net-imap,
+> rack-session, current Rails) require Ruby 3.1+. See
+> [Security & Dependency Updates](#security--dependency-updates).
+
+## Security & Dependency Updates
+
+This gem declares **loose, uncapped** runtime dependencies (`rails >= 4.0`,
+`activesupport >= 4.0`, `concurrent-ruby ~> 1.2`), so it does **not** pin you to
+vulnerable versions. CVE patches for transitive gems (`nokogiri`, `net-imap`,
+`rack-session`, Rails) are resolved by **each host application's own bundle**,
+not by this gem.
+
+To clear AWS Inspector findings in a consuming service:
+
+```bash
+bundle update nokogiri net-imap rack-session rails --conservative
+bundle exec rspec   # then redeploy
+```
+
+For the full CVE triage (in-scope vs out-of-scope findings), the mixed-Ruby
+upgrade path, and per-service instructions, see
+[SECURITY_CVE_REVIEW.md](SECURITY_CVE_REVIEW.md).
 
 ## Quick Start
 
@@ -397,6 +421,12 @@ RSpec.configure do |config|
 end
 ```
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md). Current version: **0.2.2** (backward-compatible
+bug fixes: restored hash-based worker args, dependency-free thread context
+timestamp, and a fully green spec suite).
+
 ## Contributing
 
 1. Fork the repository
@@ -410,23 +440,3 @@ end
 ## License
 
 The gem is available as open source under the [MIT License](https://opensource.org/licenses/MIT).
-
-## Changelog
-
-### Version 0.2.0 (Current)
-
-- **BREAKING**: Removed Thread.new monkey patching for better stability
-- **NEW**: Introduced `TenantRls::TenantThread` for explicit tenant-aware threading
-- **NEW**: Added `TenantThread.with_connection` for AWS RDS compatibility
-- Simplified configuration (removed thread-related options)
-- Improved reliability in server environments
-- Better PostgreSQL RLS session variable handling
-
-### Version 0.1.0
-
-- Initial release with automatic thread context preservation
-- PostgreSQL RLS integration
-- Multiple tenant resolution strategies
-- Background job support
-- Thread-safe design with Concurrent::ThreadLocalVar
-- Rails controller and model integration

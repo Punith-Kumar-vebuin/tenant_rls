@@ -181,6 +181,14 @@ module TenantRls
 
       private
         def extract_tenant_from_worker_args(args)
+          # Backward compatibility: support hash-based worker args
+          if args.is_a?(Hash)
+            tenant_id_column = TenantRls.configuration.tenant_id_column
+            value = args[tenant_id_column] || args[tenant_id_column.to_s]
+            return value if value.is_a?(Integer) && value > 0
+            return nil
+          end
+
           # Optimized: Fast scanning for tenant IDs in worker arguments
           return nil unless args.is_a?(Array) && !args.empty?
 

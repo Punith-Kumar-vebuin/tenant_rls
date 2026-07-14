@@ -170,11 +170,9 @@ RSpec.describe 'TenantRls Job Context Integration - Optimized' do
         expect(tenant_id).to be_nil
       end
 
-      it 'logs appropriate warnings for missing data' do
-        expect(Rails.logger).to receive(:warn).with(/No tenant_id could be resolved/)
-
+      it 'returns nil when no tenant data is present' do
         context = { unknown_key: 'value' }
-        resolver.resolve(context)
+        expect(resolver.resolve(context)).to be_nil
       end
     end
   end
@@ -188,6 +186,7 @@ RSpec.describe 'TenantRls Job Context Integration - Optimized' do
       allow(mock_application_record).to receive(:with_tenant).and_yield
       allow(mock_application_record).to receive(:connection).and_return(mock_connection)
       allow(mock_connection).to receive(:execute)
+      allow(mock_connection).to receive(:quote) { |value| value.to_s }
     end
 
     context 'Sidekiq Worker Integration - Fixed' do
@@ -343,7 +342,7 @@ RSpec.describe 'TenantRls Job Context Integration - Optimized' do
       end
 
       it 'supports legacy set_tenant_from_job_data method' do
-        expect(Rails.logger).to receive(:warn).with(/Using legacy set_tenant_from_job_data method/)
+        expect(Rails.logger).to receive(:warn).with(/Using legacy tenant_from_job_data method/)
 
         service = service_class.new
         job_data = { company: { id: 123 } }

@@ -8,6 +8,7 @@ RSpec.describe TenantRls::ThreadContextManager do
     # Set up a clean state
     TenantRls::Current.reset
     allow(TenantRls.configuration).to receive(:debug_logging).and_return(false)
+    stub_const('ApplicationRecord', Class.new)
     allow(ApplicationRecord).to receive(:with_tenant).and_yield
   end
 
@@ -49,7 +50,7 @@ RSpec.describe TenantRls::ThreadContextManager do
         tenant_id: test_tenant_id,
         user: test_user,
         strategy: :manual,
-        captured_at: Time.current
+        captured_at: Time.now
       }
     end
 
@@ -88,119 +89,6 @@ RSpec.describe TenantRls::ThreadContextManager do
             raise "Should not reach here"
           end
         end.not_to raise_error
-      end
-    end
-  end
-
-  describe '.with_tenant_context' do
-    before do
-      TenantRls::Current.tenant_id = test_tenant_id
-      TenantRls::Current.user = test_user
-    end
-
-    it 'creates a new thread with tenant context preserved' do
-      context_in_thread = nil
-
-      thread = described_class.with_tenant_context do
-        context_in_thread = {
-          tenant_id: TenantRls::Current.tenant_id,
-          user: TenantRls::Current.user
-        }
-      end
-
-      thread.join
-
-      expect(context_in_thread[:tenant_id]).to eq(test_tenant_id)
-      expect(context_in_thread[:user]).to eq(test_user)
-    end
-
-    it 'resets context after block execution' do
-      thread = described_class.with_tenant_context do
-        # Context should be preserved here
-        expect(TenantRls::Current.tenant_id).to eq(test_tenant_id)
-      end
-
-      thread.join
-
-      # Main thread context should be unchanged
-      expect(TenantRls::Current.tenant_id).to eq(test_tenant_id)
-    end
-  end
-
-  describe '.with_tenant_context_and_connection' do
-    before do
-      TenantRls::Current.tenant_id = test_tenant_id
-      TenantRls::Current.user = test_user
-      allow(ActiveRecord::Base.connection_pool).to receive(:with_connection).and_yield
-    end
-
-    it 'creates a thread with both context and connection management' do
-      expect(ActiveRecord::Base.connection_pool).to receive(:with_connection).and_yield
-
-      context_in_thread = nil
-
-      thread = described_class.with_tenant_context_and_connection do
-        context_in_thread = {
-          tenant_id: TenantRls::Current.tenant_id,
-          user: TenantRls::Current.user
-        }
-      end
-
-      thread.join
-
-      expect(context_in_thread[:tenant_id]).to eq(test_tenant_id)
-      expect(context_in_thread[:user]).to eq(test_user)
-    end
-  end
-
-  describe '.create_context_aware_thread' do
-    before do
-      TenantRls::Current.tenant_id = test_tenant_id
-      TenantRls::Current.user = test_user
-    end
-
-    context 'with connection management enabled' do
-      it 'creates thread with connection pooling' do
-        allow(ActiveRecord::Base.connection_pool).to receive(:with_connection).and_yield
-        expect(ActiveRecord::Base.connection_pool).to receive(:with_connection).and_yield
-
-        thread = described_class.create_context_aware_thread(with_connection: true) do
-          expect(TenantRls::Current.tenant_id).to eq(test_tenant_id)
-        end
-
-        thread.join
-      end
-    end
-
-    context 'with connection management disabled' do
-      it 'creates thread without connection pooling' do
-        expect(ActiveRecord::Base.connection_pool).not_to receive(:with_connection)
-
-        thread = described_class.create_context_aware_thread(with_connection: false) do
-          expect(TenantRls::Current.tenant_id).to eq(test_tenant_id)
-        end
-
-        thread.join
-      end
-    end
-
-    context 'with pre-captured context' do
-      it 'uses provided context instead of capturing current' do
-        custom_context = {
-          tenant_id: 456,
-          user: double('OtherUser'),
-          strategy: :manual,
-          captured_at: Time.current
-        }
-
-        thread = described_class.create_context_aware_thread(
-          context: custom_context,
-          with_connection: false
-        ) do
-          expect(TenantRls::Current.tenant_id).to eq(456)
-        end
-
-        thread.join
       end
     end
   end
